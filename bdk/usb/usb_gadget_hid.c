@@ -86,6 +86,9 @@ static void *rpt_buffer = (u8 *)USB_EP_BULK_IN_BUF_ADDR;
 
 #define USB_HID_KEYBOARD_QUEUE_LEN 64
 
+#define USB_HID_REPORT_ID_KEYBOARD 1
+#define USB_HID_REPORT_ID_MOUSE    2
+
 typedef struct _usb_hid_keyboard_ctxt_t
 {
 	usb_hid_keyboard_report_t reports[USB_HID_KEYBOARD_QUEUE_LEN];
@@ -97,6 +100,22 @@ typedef struct _usb_hid_keyboard_ctxt_t
 } usb_hid_keyboard_ctxt_t;
 
 static usb_hid_keyboard_ctxt_t usb_hid_keyboard_ctxt;
+
+typedef struct _usb_hid_keyboard_mouse_entry_t
+{
+	u8 report_id;
+	u8 size;
+	u8 data[8];
+} usb_hid_keyboard_mouse_entry_t;
+
+typedef struct _usb_hid_keyboard_mouse_ctxt_t
+{
+	usb_hid_keyboard_mouse_entry_t reports[USB_HID_KEYBOARD_QUEUE_LEN];
+	u32 read_idx;
+	u32 write_idx;
+} usb_hid_keyboard_mouse_ctxt_t;
+
+static usb_hid_keyboard_mouse_ctxt_t usb_hid_keyboard_mouse_ctxt;
 
 void usb_hid_keyboard_queue_clear(void)
 {
@@ -113,6 +132,39 @@ bool usb_hid_keyboard_queue_report(const usb_hid_keyboard_report_t *report)
 	usb_hid_keyboard_ctxt.write_idx = next_idx;
 
 	return true;
+}
+
+void usb_hid_keyboard_mouse_queue_clear(void)
+{
+	memset(&usb_hid_keyboard_mouse_ctxt, 0, sizeof(usb_hid_keyboard_mouse_ctxt));
+}
+
+static bool _usb_hid_keyboard_mouse_queue(u8 report_id, const void *data, u8 size)
+{
+	u32 next_idx = (usb_hid_keyboard_mouse_ctxt.write_idx + 1) % USB_HID_KEYBOARD_QUEUE_LEN;
+	usb_hid_keyboard_mouse_entry_t *entry;
+
+	if (size > sizeof(usb_hid_keyboard_mouse_ctxt.reports[0].data)
+		|| next_idx == usb_hid_keyboard_mouse_ctxt.read_idx)
+		return false;
+
+	entry = &usb_hid_keyboard_mouse_ctxt.reports[usb_hid_keyboard_mouse_ctxt.write_idx];
+	entry->report_id = report_id;
+	entry->size = size;
+	memcpy(entry->data, data, size);
+	usb_hid_keyboard_mouse_ctxt.write_idx = next_idx;
+
+	return true;
+}
+
+bool usb_hid_keyboard_mouse_queue_keyboard(const usb_hid_keyboard_report_t *report)
+{
+	return _usb_hid_keyboard_mouse_queue(USB_HID_REPORT_ID_KEYBOARD, report, sizeof(*report));
+}
+
+bool usb_hid_keyboard_mouse_queue_mouse(const usb_hid_mouse_report_t *report)
+{
+	return _usb_hid_keyboard_mouse_queue(USB_HID_REPORT_ID_MOUSE, report, sizeof(*report));
 }
 
 void usb_hid_keyboard_set_exit_requested(bool exit_requested)
@@ -132,6 +184,17 @@ static bool _usb_hid_keyboard_dequeue_report(usb_hid_keyboard_report_t *report)
 
 	memcpy(report, &usb_hid_keyboard_ctxt.reports[usb_hid_keyboard_ctxt.read_idx], sizeof(usb_hid_keyboard_report_t));
 	usb_hid_keyboard_ctxt.read_idx = (usb_hid_keyboard_ctxt.read_idx + 1) % USB_HID_KEYBOARD_QUEUE_LEN;
+
+	return true;
+}
+
+static bool _usb_hid_keyboard_mouse_dequeue(usb_hid_keyboard_mouse_entry_t *entry)
+{
+	if (usb_hid_keyboard_mouse_ctxt.read_idx == usb_hid_keyboard_mouse_ctxt.write_idx)
+		return false;
+
+	memcpy(entry, &usb_hid_keyboard_mouse_ctxt.reports[usb_hid_keyboard_mouse_ctxt.read_idx], sizeof(*entry));
+	usb_hid_keyboard_mouse_ctxt.read_idx = (usb_hid_keyboard_mouse_ctxt.read_idx + 1) % USB_HID_KEYBOARD_QUEUE_LEN;
 
 	return true;
 }
@@ -469,6 +532,22 @@ static bool _hid_poll_keyboard(usb_ctxt_t *usbs)
 	return false;
 }
 
+static bool _hid_poll_keyboard_mouse(usb_ctxt_t *usbs)
+{
+	usb_hid_keyboard_mouse_entry_t entry;
+
+	if (usb_hid_keyboard_get_exit_requested())
+		return true;
+
+	if (!_usb_hid_keyboard_mouse_dequeue(&entry))
+		return false;
+
+	rpt_buffer[0] = entry.report_id;
+	memcpy((u8 *)rpt_buffer + 1, entry.data, entry.size);
+
+	return _hid_transfer_start(usbs, entry.size + 1);
+}
+
 int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 {
 	u32 gadget_type;
@@ -480,7 +559,7 @@ int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 		xusb_device_get_ops(&usb_ops);
 
 	// Default to "always send" for the existing HID modes and event-driven behavior for keyboard.
-	usbs->idle = usbs->type == USB_HID_KEYBOARD ? 0 : 1;
+	usbs->idle = (usbs->type == USB_HID_KEYBOARD || usbs->type == USB_HID_KEYBOARD_MOUSE) ? 0 : 1;
 
 	if (usbs->type == USB_HID_GAMEPAD)
 	{
@@ -492,11 +571,17 @@ int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 		hid_polling_time = 4000;
 		gadget_type = USB_GADGET_HID_TOUCHPAD;
 	}
-	else
+	else if (usbs->type == USB_HID_KEYBOARD)
 	{
 		hid_polling_time = 4000;
 		gadget_type = USB_GADGET_HID_KEYBOARD;
 		usb_hid_keyboard_queue_clear();
+	}
+	else
+	{
+		hid_polling_time = 4000;
+		gadget_type = USB_GADGET_HID_KEYBOARD_MOUSE;
+		usb_hid_keyboard_mouse_queue_clear();
 	}
 
 	usbs->set_text(usbs->label, "#C7EA46 Status:# Started USB");
@@ -513,7 +598,7 @@ int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 	if (usb_ops.usb_device_enumerate(gadget_type))
 		goto error;
 
-	if (usbs->type == USB_HID_KEYBOARD)
+	if (usbs->type == USB_HID_KEYBOARD || usbs->type == USB_HID_KEYBOARD_MOUSE)
 	{
 		/*
 		 * Keyboard mode is driven by the Nyx UI. Avoid blocking here waiting for
@@ -572,9 +657,14 @@ int usb_device_gadget_hid_pump(usb_ctxt_t *usbs)
 		if (_hid_poll_touch(usbs))
 			return 1;
 	}
-	else
+	else if (usbs->type == USB_HID_KEYBOARD)
 	{
 		if (_hid_poll_keyboard(usbs))
+			return 1;
+	}
+	else
+	{
+		if (_hid_poll_keyboard_mouse(usbs))
 			return 1;
 	}
 
@@ -592,6 +682,18 @@ void usb_device_gadget_hid_stop(usb_ctxt_t *usbs)
 		memcpy(rpt_buffer, &release_report, sizeof(release_report));
 		_hid_transfer_start(usbs, sizeof(release_report));
 		usb_hid_keyboard_queue_clear();
+	}
+	else if (usbs->type == USB_HID_KEYBOARD_MOUSE)
+	{
+		usb_hid_keyboard_report_t keyboard_release = {0};
+		usb_hid_mouse_report_t mouse_release = {0};
+		rpt_buffer[0] = USB_HID_REPORT_ID_KEYBOARD;
+		memcpy((u8 *)rpt_buffer + 1, &keyboard_release, sizeof(keyboard_release));
+		_hid_transfer_start(usbs, sizeof(keyboard_release) + 1);
+		rpt_buffer[0] = USB_HID_REPORT_ID_MOUSE;
+		memcpy((u8 *)rpt_buffer + 1, &mouse_release, sizeof(mouse_release));
+		_hid_transfer_start(usbs, sizeof(mouse_release) + 1);
+		usb_hid_keyboard_mouse_queue_clear();
 	}
 
 	usb_ops.usbd_end(true, false);

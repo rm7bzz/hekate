@@ -71,6 +71,7 @@ extern lv_style_t mbox_darken;
 extern char *text_color;
 
 extern gui_status_bar_ctx status_bar;
+extern lv_indev_t *indev_touch;
 
 void reload_nyx(lv_obj_t *obj, bool force);
 lv_img_dsc_t *bmp_to_lvimg_obj(const char *path);

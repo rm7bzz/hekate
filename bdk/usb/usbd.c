@@ -116,10 +116,13 @@ extern u8  hid_report_descriptor_keyboard[];
 extern u32 hid_report_descriptor_jc_size;
 extern u32 hid_report_descriptor_touch_size;
 extern u32 hid_report_descriptor_keyboard_size;
+extern u8  hid_report_descriptor_keyboard_mouse[];
+extern u32 hid_report_descriptor_keyboard_mouse_size;
 
 extern usb_desc_t usb_gadget_hid_jc_descriptors;
 extern usb_desc_t usb_gadget_hid_touch_descriptors;
 extern usb_desc_t usb_gadget_hid_keyboard_descriptors;
+extern usb_desc_t usb_gadget_hid_keyboard_mouse_descriptors;
 extern usb_desc_t usb_gadget_ums_descriptors;
 
 usbd_t *usbdaemon;
@@ -927,7 +930,8 @@ static void _usbd_handle_get_class_request(bool *transmit_data, u8 *desc, int *s
 		return; // DELAYED_STATUS;
 
 	case USB_REQUEST_INTR_GET_PROTOCOL:
-		if (_wLength != 1 || usbd_otg->gadget != USB_GADGET_HID_KEYBOARD)
+		if (_wLength != 1 || (usbd_otg->gadget != USB_GADGET_HID_KEYBOARD
+			&& usbd_otg->gadget != USB_GADGET_HID_KEYBOARD_MOUSE))
 			break;
 
 		*transmit_data = true;
@@ -936,7 +940,8 @@ static void _usbd_handle_get_class_request(bool *transmit_data, u8 *desc, int *s
 		return;
 
 	case USB_REQUEST_INTR_SET_PROTOCOL:
-		if (_wLength || usbd_otg->gadget != USB_GADGET_HID_KEYBOARD || _wValue > 1)
+		if (_wLength || (usbd_otg->gadget != USB_GADGET_HID_KEYBOARD
+			&& usbd_otg->gadget != USB_GADGET_HID_KEYBOARD_MOUSE) || _wValue > 1)
 			break;
 
 		usbd_otg->hid_protocol = _wValue;
@@ -1260,10 +1265,15 @@ static int _usbd_handle_ep0_control_transfer()
 				desc = (u8 *)&hid_report_descriptor_touch;
 				size = hid_report_descriptor_touch_size;
 			}
-			else
+			else if (usbd_otg->gadget == USB_GADGET_HID_KEYBOARD)
 			{
 				desc = (u8 *)&hid_report_descriptor_keyboard;
 				size = hid_report_descriptor_keyboard_size;
+			}
+			else
+			{
+				desc = (u8 *)&hid_report_descriptor_keyboard_mouse;
+				size = hid_report_descriptor_keyboard_mouse_size;
 			}
 
 			usbd_otg->hid_report_sent = true;
@@ -1448,6 +1458,9 @@ int usb_device_enumerate(usb_gadget_type gadget)
 		break;
 	case USB_GADGET_HID_KEYBOARD:
 		usbd_otg->desc = &usb_gadget_hid_keyboard_descriptors;
+		break;
+	case USB_GADGET_HID_KEYBOARD_MOUSE:
+		usbd_otg->desc = &usb_gadget_hid_keyboard_mouse_descriptors;
 		break;
 	}
 

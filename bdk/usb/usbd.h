@@ -41,7 +41,8 @@ typedef enum _usb_hid_type
 {
 	USB_HID_GAMEPAD,
 	USB_HID_TOUCHPAD,
-	USB_HID_KEYBOARD
+	USB_HID_KEYBOARD,
+	USB_HID_KEYBOARD_MOUSE
 } usb_hid_type;
 
 typedef enum _usb_gadget_type
@@ -50,6 +51,7 @@ typedef enum _usb_gadget_type
 	USB_GADGET_HID_GAMEPAD  = 1,
 	USB_GADGET_HID_TOUCHPAD = 2,
 	USB_GADGET_HID_KEYBOARD = 3,
+	USB_GADGET_HID_KEYBOARD_MOUSE = 4,
 } usb_gadget_type;
 
 typedef enum {
@@ -140,6 +142,14 @@ typedef struct _usb_hid_keyboard_report_t
 	u8 keycode[6];
 } __attribute__((packed)) usb_hid_keyboard_report_t;
 
+typedef struct _usb_hid_mouse_report_t
+{
+	u8 buttons;
+	s8 x;
+	s8 y;
+	s8 wheel;
+} __attribute__((packed)) usb_hid_mouse_report_t;
+
 typedef enum {
 	USB_FEATURE_ENDPOINT_HALT        = 0,
 	USB_FEATURE_DEVICE_REMOTE_WAKEUP = 1,
@@ -227,6 +237,9 @@ int  usb_device_gadget_hid_pump(usb_ctxt_t *usbs);
 void usb_device_gadget_hid_stop(usb_ctxt_t *usbs);
 void usb_hid_keyboard_queue_clear(void);
 bool usb_hid_keyboard_queue_report(const usb_hid_keyboard_report_t *report);
+void usb_hid_keyboard_mouse_queue_clear(void);
+bool usb_hid_keyboard_mouse_queue_keyboard(const usb_hid_keyboard_report_t *report);
+bool usb_hid_keyboard_mouse_queue_mouse(const usb_hid_mouse_report_t *report);
 void usb_hid_keyboard_set_exit_requested(bool exit_requested);
 bool usb_hid_keyboard_get_exit_requested(void);
 

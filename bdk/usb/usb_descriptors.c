@@ -439,6 +439,29 @@ u8 hid_report_descriptor_keyboard[] =
 
 u32 hid_report_descriptor_keyboard_size = sizeof(hid_report_descriptor_keyboard);
 
+u8 hid_report_descriptor_keyboard_mouse[] =
+{
+	0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,
+	0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00,
+	0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
+	0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
+	0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65,
+	0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x81, 0x00,
+	0xC0,
+
+	0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x85, 0x02,
+	0x09, 0x01, 0xA1, 0x00,
+	0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00,
+	0x25, 0x01, 0x75, 0x01, 0x95, 0x03, 0x81, 0x02,
+	0x75, 0x05, 0x95, 0x01, 0x81, 0x01,
+	0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38,
+	0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03,
+	0x81, 0x06,
+	0xC0, 0xC0
+};
+
+u32 hid_report_descriptor_keyboard_mouse_size = sizeof(hid_report_descriptor_keyboard_mouse);
+
 static usb_cfg_hid_descr_t usb_configuration_descriptor_hid_jc =
 {
 	/* Configuration descriptor structure */
@@ -547,6 +570,14 @@ static u8 usb_product_string_descriptor_hid_keyboard[26] =
 	'K', 0, 'e', 0, 'y', 0, 'b', 0, 'o', 0, 'a', 0, 'r', 0, 'd', 0
 };
 
+static u8 usb_product_string_descriptor_hid_keyboard_mouse[38] =
+{
+	38, 0x03,
+	'N', 0, 'y', 0, 'x', 0, ' ', 0,
+	'K', 0, 'e', 0, 'y', 0, 'b', 0, 'o', 0, 'a', 0, 'r', 0, 'd', 0,
+	' ', 0, 'M', 0, 'o', 0, 'u', 0, 's', 0, 'e', 0
+};
+
 static usb_cfg_hid_descr_t usb_configuration_descriptor_hid_keyboard =
 {
 	.config.bLength               = 9,
@@ -575,6 +606,61 @@ static usb_cfg_hid_descr_t usb_configuration_descriptor_hid_keyboard =
 	.hid.bNumDescriptors          = 1,
 	.hid.bClassDescriptorType     = USB_DESCRIPTOR_HID_REPORT,
 	.hid.bDescriptorLength        = sizeof(hid_report_descriptor_keyboard),
+
+	.endpoint[0].bLength          = 7,
+	.endpoint[0].bDescriptorType  = USB_DESCRIPTOR_ENDPOINT,
+	.endpoint[0].bEndpointAddress = 0x81,
+	.endpoint[0].bmAttributes     = USB_EP_TYPE_INTR,
+	.endpoint[0].wMaxPacketSize   = 0x200,
+	.endpoint[0].bInterval        = 3,
+};
+
+static usb_dev_descr_t usb_device_descriptor_hid_keyboard_mouse =
+{
+	.bLength         = 18,
+	.bDescriptorType = USB_DESCRIPTOR_DEVICE,
+	.bcdUSB          = 0x210,
+	.bDeviceClass    = 0x00,
+	.bDeviceSubClass = 0x00,
+	.bDeviceProtocol = 0x00,
+	.bMaxPacketSize  = 0x40,
+	.idVendor        = 0x11EC,
+	.idProduct       = 0xA7E4,
+	.bcdDevice       = 0x0101,
+	.iManufacturer   = 1,
+	.iProduct        = 2,
+	.iSerialNumber   = 3,
+	.bNumConfigs     = 1
+};
+
+static usb_cfg_hid_descr_t usb_configuration_descriptor_hid_keyboard_mouse =
+{
+	.config.bLength               = 9,
+	.config.bDescriptorType       = USB_DESCRIPTOR_CONFIGURATION,
+	.config.wTotalLength          = sizeof(usb_cfg_hid_descr_t),
+	.config.bNumInterfaces        = 0x01,
+	.config.bConfigurationValue   = 0x01,
+	.config.iConfiguration        = 0x00,
+	.config.bmAttributes          = USB_ATTR_SELF_POWERED | USB_ATTR_BUS_POWERED_RSVD,
+	.config.bMaxPower             = 32 / 2,
+
+	.interface.bLength            = 9,
+	.interface.bDescriptorType    = USB_DESCRIPTOR_INTERFACE,
+	.interface.bInterfaceNumber   = 0,
+	.interface.bAlternateSetting  = 0,
+	.interface.bNumEndpoints      = 1,
+	.interface.bInterfaceClass    = 0x03,
+	.interface.bInterfaceSubClass = 0x00,
+	.interface.bInterfaceProtocol = 0x00,
+	.interface.iInterface         = 0x00,
+
+	.hid.bLength                  = 9,
+	.hid.bDescriptorType          = USB_DESCRIPTOR_HID,
+	.hid.bcdHID                   = 0x111,
+	.hid.bCountryCode             = 0,
+	.hid.bNumDescriptors          = 1,
+	.hid.bClassDescriptorType     = USB_DESCRIPTOR_HID_REPORT,
+	.hid.bDescriptorLength        = sizeof(hid_report_descriptor_keyboard_mouse),
 
 	.endpoint[0].bLength          = 7,
 	.endpoint[0].bDescriptorType  = USB_DESCRIPTOR_ENDPOINT,
@@ -641,6 +727,22 @@ usb_desc_t usb_gadget_hid_keyboard_descriptors =
 	.dev_bot   = &usb_device_binary_object_descriptor,
 	.vendor    = usb_vendor_string_descriptor_hid,
 	.product   = usb_product_string_descriptor_hid_keyboard,
+	.serial    = usb_serial_string_descriptor,
+	.lang_id   = usb_lang_id_string_descriptor,
+	.ms_os     = &usb_ms_os_descriptor,
+	.ms_cid    = &usb_ms_cid_descriptor,
+	.mx_ext    = &usb_ms_ext_prop_descriptor_hid
+};
+
+usb_desc_t usb_gadget_hid_keyboard_mouse_descriptors =
+{
+	.dev       = &usb_device_descriptor_hid_keyboard_mouse,
+	.dev_qual  = &usb_device_qualifier_descriptor,
+	.cfg       = (usb_cfg_simple_descr_t *)&usb_configuration_descriptor_hid_keyboard_mouse,
+	.cfg_other = NULL,
+	.dev_bot   = &usb_device_binary_object_descriptor,
+	.vendor    = usb_vendor_string_descriptor_hid,
+	.product   = usb_product_string_descriptor_hid_keyboard_mouse,
 	.serial    = usb_serial_string_descriptor,
 	.lang_id   = usb_lang_id_string_descriptor,
 	.ms_os     = &usb_ms_os_descriptor,

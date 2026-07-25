@@ -48,7 +48,11 @@ static lv_obj_t *usb_hid_kb_kb;
 static lv_obj_t *usb_hid_kb_mode_label;
 static lv_obj_t *usb_hid_kb_dark_bg;
 static lv_obj_t *usb_hid_kb_panel;
+static lv_obj_t *usb_hid_kb_mousepad;
 static lv_task_t *usb_hid_kb_task;
+static bool usb_hid_kb_combined;
+static bool usb_hid_kb_mouse_active;
+static lv_point_t usb_hid_kb_mouse_last_point;
 static bool usb_hid_kb_exit_requested;
 static bool usb_hid_kb_shift_once;
 static bool usb_hid_kb_shift_lock;
@@ -87,7 +91,8 @@ static const char *usb_hid_kb_map_fn[] =
 	"\205abc", "F1", "F2", "F3", "F4", "\205Esc", "\n",
 	"F5", "F6", "F7", "F8", "\205Tab", "\207Bksp", "\n",
 	"F9", "F10", "F11", "F12", "\207Enter", "\n",
-	"\204Up", "\204Left", "\204Down", "\204Right", "\n",
+	"\204Ins", "\204Del", "\204Home", "\204End", "\n",
+	"\204PgUp", "\204PgDn", "\204Up", "\204Left", "\204Down", "\204Right", "\n",
 	"\203Close", "\211Space", ""
 };
 
@@ -140,9 +145,16 @@ static bool _usb_hid_kb_send_usage(u8 modifier, u8 usage)
 	report.modifier = modifier;
 	report.keycode[0] = usage;
 
-	if (!usb_hid_keyboard_queue_report(&report))
+	if (usb_hid_kb_combined)
+	{
+		if (!usb_hid_keyboard_mouse_queue_keyboard(&report))
+			return false;
+		if (!usb_hid_keyboard_mouse_queue_keyboard(&release))
+			return false;
+	}
+	else if (!usb_hid_keyboard_queue_report(&report))
 		return false;
-	if (!usb_hid_keyboard_queue_report(&release))
+	else if (!usb_hid_keyboard_queue_report(&release))
 		return false;
 
 	return true;
@@ -303,6 +315,36 @@ static bool _usb_hid_kb_map_named_usage(const char *txt, u8 *modifier, u8 *usage
 		*usage = 0x4F;
 		return true;
 	}
+	if (!strcmp(txt, "Ins"))
+	{
+		*usage = 0x49;
+		return true;
+	}
+	if (!strcmp(txt, "Del"))
+	{
+		*usage = 0x4C;
+		return true;
+	}
+	if (!strcmp(txt, "Home"))
+	{
+		*usage = 0x4A;
+		return true;
+	}
+	if (!strcmp(txt, "End"))
+	{
+		*usage = 0x4D;
+		return true;
+	}
+	if (!strcmp(txt, "PgUp"))
+	{
+		*usage = 0x4B;
+		return true;
+	}
+	if (!strcmp(txt, "PgDn"))
+	{
+		*usage = 0x4E;
+		return true;
+	}
 
 	return false;
 }
@@ -329,6 +371,9 @@ static void _usb_hid_kb_cleanup(void)
 	usb_hid_kb_ta = NULL;
 	usb_hid_kb_kb = NULL;
 	usb_hid_kb_mode_label = NULL;
+	usb_hid_kb_mousepad = NULL;
+	usb_hid_kb_combined = false;
+	usb_hid_kb_mouse_active = false;
 
 	if (usb_hid_kb_panel)
 	{
@@ -342,9 +387,59 @@ static void _usb_hid_kb_cleanup(void)
 	}
 }
 
+static s8 _usb_hid_kb_mouse_delta(lv_coord_t delta)
+{
+	if (delta > 127)
+		return 127;
+	if (delta < -127)
+		return -127;
+	return (s8)delta;
+}
+
+static void _usb_hid_kb_poll_mouse(void)
+{
+	lv_point_t point;
+	lv_area_t area;
+	usb_hid_mouse_report_t report = {0};
+	bool pressed;
+	bool inside;
+
+	if (!usb_hid_kb_combined || !usb_hid_kb_mousepad || !indev_touch)
+		return;
+
+	lv_indev_get_point(indev_touch, &point);
+	lv_obj_get_coords(usb_hid_kb_mousepad, &area);
+	pressed = indev_touch->proc.state == LV_INDEV_STATE_PR;
+	inside = point.x >= area.x1 && point.x <= area.x2 && point.y >= area.y1 && point.y <= area.y2;
+
+	if (pressed && inside)
+	{
+		report.buttons = 1;
+		if (!usb_hid_kb_mouse_active)
+		{
+			usb_hid_kb_mouse_active = true;
+			usb_hid_kb_mouse_last_point = point;
+			usb_hid_keyboard_mouse_queue_mouse(&report);
+			return;
+		}
+
+		report.x = _usb_hid_kb_mouse_delta(point.x - usb_hid_kb_mouse_last_point.x);
+		report.y = _usb_hid_kb_mouse_delta(point.y - usb_hid_kb_mouse_last_point.y);
+		usb_hid_kb_mouse_last_point = point;
+		if (report.x || report.y)
+			usb_hid_keyboard_mouse_queue_mouse(&report);
+	}
+	else if (usb_hid_kb_mouse_active)
+	{
+		usb_hid_kb_mouse_active = false;
+		usb_hid_keyboard_mouse_queue_mouse(&report);
+	}
+}
+
 static void _usb_hid_kb_poll_task(void *param)
 {
 	(void)param;
+	_usb_hid_kb_poll_mouse();
 
 	if (usb_device_gadget_hid_pump(&usb_hid_kb_usbs))
 	{
@@ -624,6 +719,8 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 
 	if (usbs->type == USB_HID_GAMEPAD)
 		strcat(txt_buf, "Gamepad");
+	else if (usbs->type == USB_HID_KEYBOARD_MOUSE)
+		strcat(txt_buf, "Keyboard + Mouse");
 	else if (usbs->type == USB_HID_KEYBOARD)
 		strcat(txt_buf, "Keyboard");
 	else
@@ -639,7 +736,9 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 
 	lv_obj_t *lbl_tip = lv_label_create(mbox, NULL);
 	lv_label_set_recolor(lbl_tip, true);
-	if (usbs->type == USB_HID_KEYBOARD)
+	if (usbs->type == USB_HID_KEYBOARD_MOUSE)
+		lv_label_set_static_text(lbl_tip, "Note: Touchpad mouse + keyboard. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID.");
+	else if (usbs->type == USB_HID_KEYBOARD)
 		lv_label_set_static_text(lbl_tip, "Note: Touch to type. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID, or remove the cable.");
 	else
 		lv_label_set_static_text(lbl_tip, "Note: To end it, press #C7EA46 L3# + #C7EA46 HOME# or remove the cable.");
@@ -650,7 +749,7 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 	lv_obj_align(mbox, NULL, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_top(mbox, true);
 
-	if (usbs->type == USB_HID_KEYBOARD)
+		if (usbs->type == USB_HID_KEYBOARD || usbs->type == USB_HID_KEYBOARD_MOUSE)
 	{
 		lv_obj_del(mbox);
 
@@ -681,7 +780,10 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 
 		lv_obj_t *title = lv_label_create(panel, NULL);
 		lv_label_set_recolor(title, true);
-		lv_label_set_static_text(title, "#FF8000 HID Emulation#\n#C7EA46 Device:# Keyboard");
+		if (usbs->type == USB_HID_KEYBOARD_MOUSE)
+			lv_label_set_static_text(title, "#FF8000 HID Emulation#\n#C7EA46 Device:# Keyboard + Mouse");
+		else
+			lv_label_set_static_text(title, "#FF8000 HID Emulation#\n#C7EA46 Device:# Keyboard");
 		lv_obj_align(title, panel, LV_ALIGN_IN_TOP_LEFT, 0, 0);
 
 		lbl_status = lv_label_create(panel, NULL);
@@ -692,7 +794,10 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 
 		lbl_tip = lv_label_create(panel, NULL);
 		lv_label_set_recolor(lbl_tip, true);
-		lv_label_set_static_text(lbl_tip, "Note: Touch to type. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID, or remove the cable.");
+		if (usbs->type == USB_HID_KEYBOARD_MOUSE)
+			lv_label_set_static_text(lbl_tip, "Note: Drag the touchpad to move the mouse; tap for left click. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID.");
+		else
+			lv_label_set_static_text(lbl_tip, "Note: Touch to type. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID, or remove the cable.");
 		lv_obj_set_style(lbl_tip, &hint_small_style);
 		lv_obj_set_width(lbl_tip, LV_HOR_RES - LV_DPI);
 		lv_obj_align(lbl_tip, lbl_status, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 8);
@@ -719,6 +824,28 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		lv_obj_align(btn_exit, usb_hid_kb_ta, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, LV_DPI / 4);
 		close_btn = btn_exit;
 
+		usb_hid_kb_combined = usbs->type == USB_HID_KEYBOARD_MOUSE;
+		if (usb_hid_kb_combined)
+		{
+			static lv_style_t mousepad_style;
+			lv_style_copy(&mousepad_style, &kb_panel_style);
+			mousepad_style.body.main_color = LV_COLOR_HEX(0x18232B);
+			mousepad_style.body.grad_color = LV_COLOR_HEX(0x10171C);
+
+			usb_hid_kb_mousepad = lv_cont_create(panel, NULL);
+			lv_cont_set_style(usb_hid_kb_mousepad, &mousepad_style);
+			lv_cont_set_fit(usb_hid_kb_mousepad, false, false);
+			lv_cont_set_layout(usb_hid_kb_mousepad, LV_LAYOUT_OFF);
+			lv_obj_set_size(usb_hid_kb_mousepad, LV_HOR_RES / 3, LV_DPI * 2);
+			lv_obj_align(usb_hid_kb_mousepad, panel, LV_ALIGN_IN_TOP_RIGHT, 0, 0);
+			lv_obj_set_click(usb_hid_kb_mousepad, false);
+
+			lv_obj_t *mousepad_label = lv_label_create(usb_hid_kb_mousepad, NULL);
+			lv_label_set_recolor(mousepad_label, true);
+			lv_label_set_static_text(mousepad_label, "#C7EA46 Touchpad#\nDrag = move   Tap = left click");
+			lv_obj_align(mousepad_label, usb_hid_kb_mousepad, LV_ALIGN_CENTER, 0, 0);
+		}
+
 		usb_hid_kb_kb = lv_kb_create(panel, NULL);
 		lv_obj_set_size(usb_hid_kb_kb, LV_HOR_RES - (LV_DPI * 2), 300);
 		lv_obj_align(usb_hid_kb_kb, usb_hid_kb_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI * 4 / 3);
@@ -728,7 +855,7 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 
 		usb_hid_kb_dark_bg = dark_bg;
 		usb_hid_kb_panel = panel;
-		usb_hid_kb_usbs.type = USB_HID_KEYBOARD;
+		usb_hid_kb_usbs.type = usbs->type;
 		usb_hid_kb_usbs.system_maintenance = &manual_system_maintenance;
 		usb_hid_kb_usbs.set_text = &usb_gadget_set_text;
 		usb_hid_kb_usbs.label = usbs->label;
@@ -930,6 +1057,18 @@ static lv_res_t _action_hid_keyboard(lv_obj_t *btn)
 {
 	usb_ctxt_t usbs;
 	usbs.type = USB_HID_KEYBOARD;
+	usbs.system_maintenance = &manual_system_maintenance;
+	usbs.set_text = &usb_gadget_set_text;
+
+	_create_mbox_hid(&usbs);
+
+	return LV_RES_OK;
+}
+
+static lv_res_t _action_hid_keyboard_mouse(lv_obj_t *btn)
+{
+	usb_ctxt_t usbs;
+	usbs.type = USB_HID_KEYBOARD_MOUSE;
 	usbs.system_maintenance = &manual_system_maintenance;
 	usbs.set_text = &usb_gadget_set_text;
 
@@ -1376,6 +1515,21 @@ static lv_res_t _create_window_usb_tools(lv_obj_t *parent)
 		"#C7EA46 Joy-Con pointer input also works for selection.#");
 	lv_obj_set_style(label_txt4, &hint_small_style);
 	lv_obj_align(label_txt4, btn4, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 3);
+
+	// Create combined Keyboard + Mouse button.
+	lv_obj_t *btn5 = lv_btn_create(h2, btn4);
+	label_btn = lv_label_create(btn5, NULL);
+	lv_label_set_static_text(label_btn, SYMBOL_KEYBOARD"  Keyboard + Mouse");
+	lv_obj_align(btn5, label_txt4, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 2);
+	lv_btn_set_action(btn5, LV_BTN_ACTION_CLICK, _action_hid_keyboard_mouse);
+
+	label_txt4 = lv_label_create(h2, NULL);
+	lv_label_set_recolor(label_txt4, true);
+	lv_label_set_static_text(label_txt4,
+		"Type with the on-screen keyboard and use the touchpad\n"
+		"area as a USB mouse for a connected PC.");
+	lv_obj_set_style(label_txt4, &hint_small_style);
+	lv_obj_align(label_txt4, btn5, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 3);
 	return LV_RES_OK;
 }
 

@@ -392,12 +392,15 @@ typedef struct _xusbd_controller_t
 extern u32 hid_report_descriptor_jc_size;
 extern u32 hid_report_descriptor_touch_size;
 extern u32 hid_report_descriptor_keyboard_size;
+extern u32 hid_report_descriptor_keyboard_mouse_size;
 extern u8 hid_report_descriptor_jc[];
 extern u8 hid_report_descriptor_touch[];
 extern u8 hid_report_descriptor_keyboard[];
+extern u8 hid_report_descriptor_keyboard_mouse[];
 extern usb_desc_t usb_gadget_hid_jc_descriptors;
 extern usb_desc_t usb_gadget_hid_touch_descriptors;
 extern usb_desc_t usb_gadget_hid_keyboard_descriptors;
+extern usb_desc_t usb_gadget_hid_keyboard_mouse_descriptors;
 extern usb_desc_t usb_gadget_ums_descriptors;
 
 // All rings and EP context must be aligned to 0x10.
@@ -522,6 +525,7 @@ static void _xusb_ep_set_type_and_metrics(u32 ep_idx, volatile xusb_ep_ctx_t *ep
 			break;
 		case USB_GADGET_HID_GAMEPAD:
 		case USB_GADGET_HID_TOUCHPAD:
+		case USB_GADGET_HID_KEYBOARD_MOUSE:
 			ep_ctxt->avg_trb_len = 1024;
 			break;
 		default:
@@ -611,6 +615,7 @@ static void _xusb_ep_set_type_and_metrics(u32 ep_idx, volatile xusb_ep_ctx_t *ep
 			break;
 		case USB_GADGET_HID_GAMEPAD:
 		case USB_GADGET_HID_TOUCHPAD:
+		case USB_GADGET_HID_KEYBOARD_MOUSE:
 			ep_ctxt->avg_trb_len = 16; // Normal interrupt avg is 1024KB.
 			break;
 		default:
@@ -1500,13 +1505,15 @@ static int _xusb_handle_get_class_request(const usb_ctrl_setup_t *ctrl_setup)
 		return _xusb_issue_status_trb(USB_DIR_IN); // DELAYED_STATUS;
 
 	case USB_REQUEST_INTR_GET_PROTOCOL:
-		if (_wLength != 1 || usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD)
+		if (_wLength != 1 || (usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD
+			&& usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD_MOUSE))
 			goto stall;
 
 		return _xusb_issue_data_trb(&usbd_xotg->hid_protocol, 1, USB_DIR_IN);
 
 	case USB_REQUEST_INTR_SET_PROTOCOL:
-		if (_wLength || usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD || _wValue > 1)
+		if (_wLength || (usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD
+			&& usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD_MOUSE) || _wValue > 1)
 			goto stall;
 
 		usbd_xotg->hid_protocol = _wValue;
@@ -1828,10 +1835,15 @@ static int _xusbd_handle_ep0_control_transfer(usb_ctrl_setup_t *ctrl_setup)
 				desc = (u8 *)&hid_report_descriptor_touch;
 				size = hid_report_descriptor_touch_size;
 			}
-			else
+			else if (usbd_xotg->gadget == USB_GADGET_HID_KEYBOARD)
 			{
 				desc = (u8 *)&hid_report_descriptor_keyboard;
 				size = hid_report_descriptor_keyboard_size;
+			}
+			else
+			{
+				desc = (u8 *)&hid_report_descriptor_keyboard_mouse;
+				size = hid_report_descriptor_keyboard_mouse_size;
 			}
 			transmit_data = true;
 			usbd_xotg->device_state = XUSB_HID_CONFIGURED_STS_WAIT;
@@ -1998,6 +2010,9 @@ int xusb_device_enumerate(usb_gadget_type gadget)
 		break;
 	case USB_GADGET_HID_KEYBOARD:
 		usbd_xotg->desc = &usb_gadget_hid_keyboard_descriptors;
+		break;
+	case USB_GADGET_HID_KEYBOARD_MOUSE:
+		usbd_xotg->desc = &usb_gadget_hid_keyboard_mouse_descriptors;
 		break;
 	}
 
