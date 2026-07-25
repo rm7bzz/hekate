@@ -612,7 +612,7 @@ console:
 			data->state = LV_INDEV_STATE_REL; // Ensure that no clicks are allowed.
 	}
 
-	if (jc_pad->b && close_btn)
+	if ((jc_pad->b || (jc_pad->l3 && jc_pad->home)) && close_btn)
 	{
 		lv_action_t close_btn_action = lv_btn_get_action(close_btn, LV_BTN_ACTION_CLICK);
 		close_btn_action(close_btn);

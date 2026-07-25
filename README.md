@@ -31,6 +31,7 @@ Custom Graphical Nintendo Switch bootloader, firmware patcher, tools, and many m
 - **Switch Android & Linux flasher**
 - **USB Mass Storage (UMS) for SD/eMMC/emuMMC** -- Converts Switch into a SD Card Reader
 - **USB Gamepad** -- Converts Switch with Joycon into a USB HID Gamepad
+- **USB Keyboard** -- Converts Switch into a USB HID Keyboard with Nyx on-screen typing
 - **Hardware and Peripherals info** (SoC, Fuses, RAM, Display, Touch, eMMC, SD, Battery, PSU, Charger)
 - **Many other tools** like Archive Bit Fixer, Touch Calibration, SD/eMMC Benchmark, AutoRCM enabler and more
 

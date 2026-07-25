@@ -295,6 +295,24 @@ static usb_dev_descr_t usb_device_descriptor_hid_touch =
 	.bNumConfigs     = 1
 };
 
+static usb_dev_descr_t usb_device_descriptor_hid_keyboard =
+{
+	.bLength         = 18,
+	.bDescriptorType = USB_DESCRIPTOR_DEVICE,
+	.bcdUSB          = 0x210,
+	.bDeviceClass    = 0x00,
+	.bDeviceSubClass = 0x00,
+	.bDeviceProtocol = 0x00,
+	.bMaxPacketSize  = 0x40,
+	.idVendor        = 0x11EC,
+	.idProduct       = 0xA7E3,
+	.bcdDevice       = 0x0101,
+	.iManufacturer   = 1,
+	.iProduct        = 2,
+	.iSerialNumber   = 3,
+	.bNumConfigs     = 1
+};
+
 u8 hid_report_descriptor_jc[] =
 {
 	0x05, 0x01,                // USAGE_PAGE (Generic Desktop),
@@ -391,6 +409,35 @@ u8 hid_report_descriptor_touch[] =
 	0xc0,                               // END_COLLECTION
 };
 u32 hid_report_descriptor_touch_size = sizeof(hid_report_descriptor_touch);
+
+u8 hid_report_descriptor_keyboard[] =
+{
+	0x05, 0x01,
+	0x09, 0x06,
+	0xA1, 0x01,
+	0x05, 0x07,
+	0x19, 0xE0,
+	0x29, 0xE7,
+	0x15, 0x00,
+	0x25, 0x01,
+	0x75, 0x01,
+	0x95, 0x08,
+	0x81, 0x02,
+	0x95, 0x01,
+	0x75, 0x08,
+	0x81, 0x01,
+	0x95, 0x06,
+	0x75, 0x08,
+	0x15, 0x00,
+	0x25, 0x65,
+	0x05, 0x07,
+	0x19, 0x00,
+	0x29, 0x65,
+	0x81, 0x00,
+	0xC0
+};
+
+u32 hid_report_descriptor_keyboard_size = sizeof(hid_report_descriptor_keyboard);
 
 static usb_cfg_hid_descr_t usb_configuration_descriptor_hid_jc =
 {
@@ -493,6 +540,50 @@ static usb_cfg_hid_descr_t usb_configuration_descriptor_hid_touch =
 	.endpoint[0].bInterval        = 3,   // 4ms on HS.
 };
 
+static u8 usb_product_string_descriptor_hid_keyboard[26] =
+{
+	26, 0x03,
+	'N', 0, 'y', 0, 'x', 0, ' ', 0,
+	'K', 0, 'e', 0, 'y', 0, 'b', 0, 'o', 0, 'a', 0, 'r', 0, 'd', 0
+};
+
+static usb_cfg_hid_descr_t usb_configuration_descriptor_hid_keyboard =
+{
+	.config.bLength               = 9,
+	.config.bDescriptorType       = USB_DESCRIPTOR_CONFIGURATION,
+	.config.wTotalLength          = sizeof(usb_cfg_hid_descr_t),
+	.config.bNumInterfaces        = 0x01,
+	.config.bConfigurationValue   = 0x01,
+	.config.iConfiguration        = 0x00,
+	.config.bmAttributes          = USB_ATTR_SELF_POWERED | USB_ATTR_BUS_POWERED_RSVD,
+	.config.bMaxPower             = 32 / 2,
+
+	.interface.bLength            = 9,
+	.interface.bDescriptorType    = USB_DESCRIPTOR_INTERFACE,
+	.interface.bInterfaceNumber   = 0,
+	.interface.bAlternateSetting  = 0,
+	.interface.bNumEndpoints      = 1,
+	.interface.bInterfaceClass    = 0x03,
+	.interface.bInterfaceSubClass = 0x01,
+	.interface.bInterfaceProtocol = 0x01,
+	.interface.iInterface         = 0x00,
+
+	.hid.bLength                  = 9,
+	.hid.bDescriptorType          = USB_DESCRIPTOR_HID,
+	.hid.bcdHID                   = 0x111,
+	.hid.bCountryCode             = 0,
+	.hid.bNumDescriptors          = 1,
+	.hid.bClassDescriptorType     = USB_DESCRIPTOR_HID_REPORT,
+	.hid.bDescriptorLength        = sizeof(hid_report_descriptor_keyboard),
+
+	.endpoint[0].bLength          = 7,
+	.endpoint[0].bDescriptorType  = USB_DESCRIPTOR_ENDPOINT,
+	.endpoint[0].bEndpointAddress = 0x81,
+	.endpoint[0].bmAttributes     = USB_EP_TYPE_INTR,
+	.endpoint[0].wMaxPacketSize   = 0x200,
+	.endpoint[0].bInterval        = 3,
+};
+
 usb_desc_t usb_gadget_ums_descriptors =
 {
 	.dev       = &usb_device_descriptor_ums,
@@ -534,6 +625,22 @@ usb_desc_t usb_gadget_hid_touch_descriptors =
 	.dev_bot   = &usb_device_binary_object_descriptor,
 	.vendor    = usb_vendor_string_descriptor_hid,
 	.product   = usb_product_string_descriptor_hid_touch,
+	.serial    = usb_serial_string_descriptor,
+	.lang_id   = usb_lang_id_string_descriptor,
+	.ms_os     = &usb_ms_os_descriptor,
+	.ms_cid    = &usb_ms_cid_descriptor,
+	.mx_ext    = &usb_ms_ext_prop_descriptor_hid
+};
+
+usb_desc_t usb_gadget_hid_keyboard_descriptors =
+{
+	.dev       = &usb_device_descriptor_hid_keyboard,
+	.dev_qual  = &usb_device_qualifier_descriptor,
+	.cfg       = (usb_cfg_simple_descr_t *)&usb_configuration_descriptor_hid_keyboard,
+	.cfg_other = NULL,
+	.dev_bot   = &usb_device_binary_object_descriptor,
+	.vendor    = usb_vendor_string_descriptor_hid,
+	.product   = usb_product_string_descriptor_hid_keyboard,
 	.serial    = usb_serial_string_descriptor,
 	.lang_id   = usb_lang_id_string_descriptor,
 	.ms_os     = &usb_ms_os_descriptor,

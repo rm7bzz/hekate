@@ -381,6 +381,7 @@ typedef struct _xusbd_controller_t
 
 	u8 max_lun;
 	bool max_lun_set;
+	u8   hid_protocol;
 	void *hid_rpt_buffer;
 	u32  hid_rpt_size;
 	u32  intr_idle_rate;
@@ -390,10 +391,13 @@ typedef struct _xusbd_controller_t
 
 extern u32 hid_report_descriptor_jc_size;
 extern u32 hid_report_descriptor_touch_size;
+extern u32 hid_report_descriptor_keyboard_size;
 extern u8 hid_report_descriptor_jc[];
 extern u8 hid_report_descriptor_touch[];
+extern u8 hid_report_descriptor_keyboard[];
 extern usb_desc_t usb_gadget_hid_jc_descriptors;
 extern usb_desc_t usb_gadget_hid_touch_descriptors;
+extern usb_desc_t usb_gadget_hid_keyboard_descriptors;
 extern usb_desc_t usb_gadget_ums_descriptors;
 
 // All rings and EP context must be aligned to 0x10.
@@ -1495,6 +1499,19 @@ static int _xusb_handle_get_class_request(const usb_ctrl_setup_t *ctrl_setup)
 		usbd_xotg->intr_idle_req  = true;
 		return _xusb_issue_status_trb(USB_DIR_IN); // DELAYED_STATUS;
 
+	case USB_REQUEST_INTR_GET_PROTOCOL:
+		if (_wLength != 1 || usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD)
+			goto stall;
+
+		return _xusb_issue_data_trb(&usbd_xotg->hid_protocol, 1, USB_DIR_IN);
+
+	case USB_REQUEST_INTR_SET_PROTOCOL:
+		if (_wLength || usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD || _wValue > 1)
+			goto stall;
+
+		usbd_xotg->hid_protocol = _wValue;
+		return _xusb_issue_status_trb(USB_DIR_IN);
+
 	case USB_REQUEST_BULK_RESET:
 		if (_wLength)
 			goto stall;
@@ -1806,10 +1823,15 @@ static int _xusbd_handle_ep0_control_transfer(usb_ctrl_setup_t *ctrl_setup)
 				desc = (u8 *)&hid_report_descriptor_jc;
 				size = hid_report_descriptor_jc_size;
 			}
-			else // USB_GADGET_HID_TOUCHPAD
+			else if (usbd_xotg->gadget == USB_GADGET_HID_TOUCHPAD)
 			{
 				desc = (u8 *)&hid_report_descriptor_touch;
 				size = hid_report_descriptor_touch_size;
+			}
+			else
+			{
+				desc = (u8 *)&hid_report_descriptor_keyboard;
+				size = hid_report_descriptor_keyboard_size;
 			}
 			transmit_data = true;
 			usbd_xotg->device_state = XUSB_HID_CONFIGURED_STS_WAIT;
@@ -1974,9 +1996,13 @@ int xusb_device_enumerate(usb_gadget_type gadget)
 	case USB_GADGET_HID_TOUCHPAD:
 		usbd_xotg->desc = &usb_gadget_hid_touch_descriptors;
 		break;
+	case USB_GADGET_HID_KEYBOARD:
+		usbd_xotg->desc = &usb_gadget_hid_keyboard_descriptors;
+		break;
 	}
 
 	usbd_xotg->gadget = gadget;
+	usbd_xotg->hid_protocol = 1;
 
 	/*
 	 * Set interrupt moderation to 0us.

@@ -104,6 +104,7 @@ typedef struct _usbd_controller_t
 	u32  intr_idle_rate;
 	bool intr_idle_req;
 	bool hid_report_sent;
+	u8   hid_protocol;
 	void *hid_rpt_buffer;
 	u32  hid_rpt_size;
 	u32 charger_detect;
@@ -111,11 +112,14 @@ typedef struct _usbd_controller_t
 
 extern u8  hid_report_descriptor_jc[];
 extern u8  hid_report_descriptor_touch[];
+extern u8  hid_report_descriptor_keyboard[];
 extern u32 hid_report_descriptor_jc_size;
 extern u32 hid_report_descriptor_touch_size;
+extern u32 hid_report_descriptor_keyboard_size;
 
 extern usb_desc_t usb_gadget_hid_jc_descriptors;
 extern usb_desc_t usb_gadget_hid_touch_descriptors;
+extern usb_desc_t usb_gadget_hid_keyboard_descriptors;
 extern usb_desc_t usb_gadget_ums_descriptors;
 
 usbd_t *usbdaemon;
@@ -922,6 +926,23 @@ static void _usbd_handle_get_class_request(bool *transmit_data, u8 *desc, int *s
 		_usbd_ep_ack(USB_EP_CTRL_IN);
 		return; // DELAYED_STATUS;
 
+	case USB_REQUEST_INTR_GET_PROTOCOL:
+		if (_wLength != 1 || usbd_otg->gadget != USB_GADGET_HID_KEYBOARD)
+			break;
+
+		*transmit_data = true;
+		*size = 1;
+		desc[0] = usbd_otg->hid_protocol;
+		return;
+
+	case USB_REQUEST_INTR_SET_PROTOCOL:
+		if (_wLength || usbd_otg->gadget != USB_GADGET_HID_KEYBOARD || _wValue > 1)
+			break;
+
+		usbd_otg->hid_protocol = _wValue;
+		_usbd_ep_ack(USB_EP_CTRL_IN);
+		return;
+
 	case USB_REQUEST_BULK_RESET:
 		if (_wLength)
 			break;
@@ -1234,10 +1255,15 @@ static int _usbd_handle_ep0_control_transfer()
 				desc = (u8 *)&hid_report_descriptor_jc;
 				size = hid_report_descriptor_jc_size;
 			}
-			else // USB_GADGET_HID_TOUCHPAD
+			else if (usbd_otg->gadget == USB_GADGET_HID_TOUCHPAD)
 			{
 				desc = (u8 *)&hid_report_descriptor_touch;
 				size = hid_report_descriptor_touch_size;
+			}
+			else
+			{
+				desc = (u8 *)&hid_report_descriptor_keyboard;
+				size = hid_report_descriptor_keyboard_size;
 			}
 
 			usbd_otg->hid_report_sent = true;
@@ -1420,9 +1446,13 @@ int usb_device_enumerate(usb_gadget_type gadget)
 	case USB_GADGET_HID_TOUCHPAD:
 		usbd_otg->desc = &usb_gadget_hid_touch_descriptors;
 		break;
+	case USB_GADGET_HID_KEYBOARD:
+		usbd_otg->desc = &usb_gadget_hid_keyboard_descriptors;
+		break;
 	}
 
 	usbd_otg->gadget = gadget;
+	usbd_otg->hid_protocol = 1;
 
 	return _usbd_ep0_initialize();
 }

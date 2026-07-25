@@ -82,6 +82,58 @@ static usb_ops_t usb_ops;
 
 static void *rpt_buffer = (u8 *)USB_EP_BULK_IN_BUF_ADDR;
 
+#define USB_HID_KEYBOARD_QUEUE_LEN 64
+
+typedef struct _usb_hid_keyboard_ctxt_t
+{
+	usb_hid_keyboard_report_t reports[USB_HID_KEYBOARD_QUEUE_LEN];
+	usb_hid_keyboard_report_t last_report;
+	u32 read_idx;
+	u32 write_idx;
+	u32 last_report_time;
+	bool exit_requested;
+} usb_hid_keyboard_ctxt_t;
+
+static usb_hid_keyboard_ctxt_t usb_hid_keyboard_ctxt;
+
+void usb_hid_keyboard_queue_clear(void)
+{
+	memset(&usb_hid_keyboard_ctxt, 0, sizeof(usb_hid_keyboard_ctxt));
+}
+
+bool usb_hid_keyboard_queue_report(const usb_hid_keyboard_report_t *report)
+{
+	u32 next_idx = (usb_hid_keyboard_ctxt.write_idx + 1) % USB_HID_KEYBOARD_QUEUE_LEN;
+	if (next_idx == usb_hid_keyboard_ctxt.read_idx)
+		return false;
+
+	memcpy(&usb_hid_keyboard_ctxt.reports[usb_hid_keyboard_ctxt.write_idx], report, sizeof(usb_hid_keyboard_report_t));
+	usb_hid_keyboard_ctxt.write_idx = next_idx;
+
+	return true;
+}
+
+void usb_hid_keyboard_set_exit_requested(bool exit_requested)
+{
+	usb_hid_keyboard_ctxt.exit_requested = exit_requested;
+}
+
+bool usb_hid_keyboard_get_exit_requested(void)
+{
+	return usb_hid_keyboard_ctxt.exit_requested;
+}
+
+static bool _usb_hid_keyboard_dequeue_report(usb_hid_keyboard_report_t *report)
+{
+	if (usb_hid_keyboard_ctxt.read_idx == usb_hid_keyboard_ctxt.write_idx)
+		return false;
+
+	memcpy(report, &usb_hid_keyboard_ctxt.reports[usb_hid_keyboard_ctxt.read_idx], sizeof(usb_hid_keyboard_report_t));
+	usb_hid_keyboard_ctxt.read_idx = (usb_hid_keyboard_ctxt.read_idx + 1) % USB_HID_KEYBOARD_QUEUE_LEN;
+
+	return true;
+}
+
 static bool _jc_calibration(const jc_gamepad_rpt_t *jc_pad)
 {
 	// Calibrate left stick.
@@ -386,6 +438,35 @@ static bool _hid_poll_touch(usb_ctxt_t *usbs)
 	return false;
 }
 
+static bool _hid_poll_keyboard(usb_ctxt_t *usbs)
+{
+	usb_hid_keyboard_report_t report;
+	bool has_report = _usb_hid_keyboard_dequeue_report(&report);
+
+	if (usb_hid_keyboard_ctxt.exit_requested)
+		return true;
+
+	if (has_report)
+	{
+		memcpy(rpt_buffer, &report, sizeof(report));
+		memcpy(&usb_hid_keyboard_ctxt.last_report, &report, sizeof(report));
+		usb_hid_keyboard_ctxt.last_report_time = get_tmr_us();
+
+		if (_hid_transfer_start(usbs, sizeof(report)))
+			return true;
+	}
+	else if (usbs->idle && ((u32)(get_tmr_us() - usb_hid_keyboard_ctxt.last_report_time) >= usbs->idle))
+	{
+		memcpy(rpt_buffer, &usb_hid_keyboard_ctxt.last_report, sizeof(usb_hid_keyboard_ctxt.last_report));
+		usb_hid_keyboard_ctxt.last_report_time = get_tmr_us();
+
+		if (_hid_transfer_start(usbs, sizeof(usb_hid_keyboard_ctxt.last_report)))
+			return true;
+	}
+
+	return false;
+}
+
 int usb_device_gadget_hid(usb_ctxt_t *usbs)
 {
 	int res = 0;
@@ -398,19 +479,24 @@ int usb_device_gadget_hid(usb_ctxt_t *usbs)
 	else
 		xusb_device_get_ops(&usb_ops);
 
-	// Always push packets by default.
-	//! TODO: For now only per polling rate or on change is supported.
-	usbs->idle = 1;
+	// Default to "always send" for the existing HID modes and event-driven behavior for keyboard.
+	usbs->idle = usbs->type == USB_HID_KEYBOARD ? 0 : 1;
 
 	if (usbs->type == USB_HID_GAMEPAD)
 	{
 		polling_time = 15000;
 		gadget_type = USB_GADGET_HID_GAMEPAD;
 	}
-	else
+	else if (usbs->type == USB_HID_TOUCHPAD)
 	{
 		polling_time = 4000;
 		gadget_type = USB_GADGET_HID_TOUCHPAD;
+	}
+	else
+	{
+		polling_time = 4000;
+		gadget_type = USB_GADGET_HID_KEYBOARD;
+		usb_hid_keyboard_queue_clear();
 	}
 
 	usbs->set_text(usbs->label, "#C7EA46 Status:# Started USB");
@@ -429,7 +515,14 @@ int usb_device_gadget_hid(usb_ctxt_t *usbs)
 
 	usbs->set_text(usbs->label, "#C7EA46 Status:# Waiting for HID report request");
 
-	u32 rpt_size = usbs->type == USB_HID_GAMEPAD ? sizeof(gamepad_report_t) : sizeof(touchpad_report_t);
+	u32 rpt_size;
+	if (usbs->type == USB_HID_GAMEPAD)
+		rpt_size = sizeof(gamepad_report_t);
+	else if (usbs->type == USB_HID_TOUCHPAD)
+		rpt_size = sizeof(touchpad_report_t);
+	else
+		rpt_size = sizeof(usb_hid_keyboard_report_t);
+
 	if (usb_ops.usb_device_class_send_hid_report(rpt_buffer, rpt_size))
 		goto error;
 
@@ -453,9 +546,14 @@ int usb_device_gadget_hid(usb_ctxt_t *usbs)
 			if (_hid_poll_jc(usbs))
 				break;
 		}
-		else
+		else if (usbs->type == USB_HID_TOUCHPAD)
 		{
 			if (_hid_poll_touch(usbs))
+				break;
+		}
+		else
+		{
+			if (_hid_poll_keyboard(usbs))
 				break;
 		}
 
@@ -463,6 +561,12 @@ int usb_device_gadget_hid(usb_ctxt_t *usbs)
 		timer = get_tmr_us() - timer;
 		if (timer < polling_time)
 			usleep(polling_time - timer);
+
+		if (usbs->type == USB_HID_KEYBOARD)
+		{
+			usbs->system_maintenance(true);
+			continue;
+		}
 
 		if (timer_sys < get_tmr_ms())
 		{
@@ -479,6 +583,14 @@ error:
 	res = 1;
 
 exit:
+	if (usbs->type == USB_HID_KEYBOARD)
+	{
+		usb_hid_keyboard_report_t release_report = {0};
+		memcpy(rpt_buffer, &release_report, sizeof(release_report));
+		_hid_transfer_start(usbs, sizeof(release_report));
+		usb_hid_keyboard_queue_clear();
+	}
+
 	usb_ops.usbd_end(true, false);
 
 	return res;

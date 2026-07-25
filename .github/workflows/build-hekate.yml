@@ -1,0 +1,40 @@
+name: Build Hekate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitarm:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          make clean
+          make
+
+      - name: Bundle artifacts
+        run: |
+          mkdir -p artifacts
+          cp -f output/hekate.bin artifacts/ || true
+          cp -f output/hekate_unc.bin artifacts/ || true
+          cp -f output/nyx.bin artifacts/ || true
+          cp -f bootloader/update.bin artifacts/ || true
+          tar -czf "hekate-${GITHUB_REF_NAME//\//-}-${GITHUB_SHA}.tar.gz" -C artifacts .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hekate-${{ github.ref_name }}-${{ github.sha }}
+          path: |
+            hekate-*.tar.gz
+            artifacts/*
+          if-no-files-found: error
+          retention-days: 14
