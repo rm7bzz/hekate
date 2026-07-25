@@ -496,6 +496,7 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 	lv_obj_t *dark_bg = lv_obj_create(lv_scr_act(), NULL);
 	lv_obj_set_style(dark_bg, &mbox_darken);
 	lv_obj_set_size(dark_bg, LV_HOR_RES, LV_VER_RES);
+	lv_obj_t *panel = NULL;
 
 	static const char *mbox_btn_map_dis[] = { "\251", "\262Close", "\251", "" };
 	static const char *mbox_btn_map[] = { "\251", "\222Close", "\251", "" };
@@ -548,7 +549,7 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		kb_panel_style.body.padding.ver = LV_DPI / 3;
 		kb_panel_style.body.padding.inner = LV_DPI / 5;
 
-		lv_obj_t *panel = lv_cont_create(dark_bg, NULL);
+		panel = lv_cont_create(dark_bg, NULL);
 		lv_cont_set_style(panel, &kb_panel_style);
 		lv_cont_set_fit(panel, false, false);
 		lv_cont_set_layout(panel, LV_LAYOUT_OFF);
@@ -617,7 +618,13 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 	usb_hid_kb_kb = NULL;
 	usb_hid_kb_mode_label = NULL;
 
-	if (usbs->type != USB_HID_KEYBOARD)
+	if (usbs->type == USB_HID_KEYBOARD)
+	{
+		if (panel)
+			lv_obj_del(panel);
+		lv_obj_del(dark_bg);
+	}
+	else
 		lv_mbox_add_btns(mbox, mbox_btn_map, nyx_mbox_action);
 
 	return LV_RES_OK;
@@ -787,23 +794,12 @@ static lv_res_t _action_hid_jc(lv_obj_t *btn)
 
 static lv_res_t _action_hid_keyboard(lv_obj_t *btn)
 {
-	// Reduce BPMP, RAM and backlight and power off SDMMC1 to conserve power.
-	sd_end();
-	minerva_change_freq(FREQ_800);
-	bpmp_clk_rate_relaxed(true);
-	display_backlight_brightness(10, 1000);
-
 	usb_ctxt_t usbs;
 	usbs.type = USB_HID_KEYBOARD;
 	usbs.system_maintenance = &_usb_hid_kb_system_maintenance;
 	usbs.set_text = &usb_gadget_set_text;
 
 	_create_mbox_hid(&usbs);
-
-	// Restore BPMP, RAM and backlight.
-	minerva_change_freq(FREQ_1600);
-	bpmp_clk_rate_relaxed(false);
-	display_backlight_brightness(h_cfg.backlight - 20, 1000);
 
 	return LV_RES_OK;
 }
