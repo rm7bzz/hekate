@@ -20,6 +20,11 @@ jobs:
           make clean
           make
 
+      - name: Prepare artifact name
+        run: |
+          SAFE_REF=$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '-')
+          echo "SAFE_REF=$SAFE_REF" >> "$GITHUB_ENV"
+
       - name: Bundle artifacts
         run: |
           mkdir -p artifacts
@@ -27,14 +32,12 @@ jobs:
           cp -f output/hekate_unc.bin artifacts/ || true
           cp -f output/nyx.bin artifacts/ || true
           cp -f bootloader/update.bin artifacts/ || true
-          tar -czf "hekate-${GITHUB_REF_NAME//\//-}-${GITHUB_SHA}.tar.gz" -C artifacts .
+          tar -czf "hekate-${SAFE_REF}-${GITHUB_SHA}.tar.gz" -C artifacts .
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hekate-${{ github.ref_name }}-${{ github.sha }}
-          path: |
-            hekate-*.tar.gz
-            artifacts/*
+          name: hekate-${{ env.SAFE_REF }}-${{ github.sha }}
+          path: hekate-${{ env.SAFE_REF }}-${{ github.sha }}.tar.gz
           if-no-files-found: error
           retention-days: 14
