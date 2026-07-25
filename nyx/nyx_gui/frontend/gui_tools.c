@@ -536,7 +536,25 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 
 	if (usbs->type == USB_HID_KEYBOARD)
 	{
-		lv_obj_set_width(mbox, LV_HOR_RES - LV_DPI);
+		lv_obj_del(mbox);
+
+		static lv_style_t kb_panel_style;
+		lv_style_copy(&kb_panel_style, &lv_style_pretty);
+		kb_panel_style.body.main_color = n_cfg.theme_bg;
+		kb_panel_style.body.grad_color = n_cfg.theme_bg;
+		kb_panel_style.body.border.color = LV_COLOR_HEX(0x606060);
+		kb_panel_style.body.border.width = 2;
+		kb_panel_style.body.padding.hor = LV_DPI / 3;
+		kb_panel_style.body.padding.ver = LV_DPI / 3;
+		kb_panel_style.body.padding.inner = LV_DPI / 5;
+
+		lv_obj_t *panel = lv_cont_create(dark_bg, NULL);
+		lv_cont_set_style(panel, &kb_panel_style);
+		lv_cont_set_fit(panel, false, false);
+		lv_cont_set_layout(panel, LV_LAYOUT_OFF);
+		lv_obj_set_size(panel, LV_HOR_RES - LV_DPI / 2, LV_VER_RES - LV_DPI / 2);
+		lv_obj_align(panel, NULL, LV_ALIGN_CENTER, 0, 0);
+		lv_obj_set_top(panel, true);
 
 		usb_hid_kb_exit_requested = false;
 		usb_hid_keyboard_set_exit_requested(false);
@@ -545,12 +563,30 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		usb_hid_kb_last_shift_tap = 0;
 		usb_hid_kb_map_mode = USB_HID_KB_MAP_LOWER;
 
-		usb_hid_kb_mode_label = lv_label_create(mbox, NULL);
+		lv_obj_t *title = lv_label_create(panel, NULL);
+		lv_label_set_recolor(title, true);
+		lv_label_set_static_text(title, "#FF8000 HID Emulation#\n#C7EA46 Device:# Keyboard");
+		lv_obj_align(title, panel, LV_ALIGN_IN_TOP_LEFT, 0, 0);
+
+		lbl_status = lv_label_create(panel, NULL);
+		lv_label_set_recolor(lbl_status, true);
+		lv_label_set_text(lbl_status, " ");
+		lv_obj_align(lbl_status, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 8);
+		usbs->label = (void *)lbl_status;
+
+		lbl_tip = lv_label_create(panel, NULL);
+		lv_label_set_recolor(lbl_tip, true);
+		lv_label_set_static_text(lbl_tip, "Note: Touch to type. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID, or remove the cable.");
+		lv_obj_set_style(lbl_tip, &hint_small_style);
+		lv_obj_set_width(lbl_tip, LV_HOR_RES - LV_DPI);
+		lv_obj_align(lbl_tip, lbl_status, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 8);
+
+		usb_hid_kb_mode_label = lv_label_create(panel, NULL);
 		lv_label_set_recolor(usb_hid_kb_mode_label, true);
 		lv_obj_set_style(usb_hid_kb_mode_label, &hint_small_style);
 		lv_obj_align(usb_hid_kb_mode_label, lbl_tip, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 6);
 
-		usb_hid_kb_ta = lv_ta_create(mbox, NULL);
+		usb_hid_kb_ta = lv_ta_create(panel, NULL);
 		lv_ta_set_one_line(usb_hid_kb_ta, true);
 		lv_ta_set_cursor_type(usb_hid_kb_ta, LV_CURSOR_HIDDEN);
 		lv_ta_set_text(usb_hid_kb_ta, "");
@@ -559,7 +595,7 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		lv_obj_set_width(usb_hid_kb_ta, LV_HOR_RES - (LV_DPI * 2));
 		lv_obj_align(usb_hid_kb_ta, usb_hid_kb_mode_label, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 4);
 
-		lv_obj_t *btn_exit = lv_btn_create(mbox, NULL);
+		lv_obj_t *btn_exit = lv_btn_create(panel, NULL);
 		lv_obj_t *lbl_exit = lv_label_create(btn_exit, NULL);
 		lv_label_set_static_text(lbl_exit, "End HID");
 		lv_btn_set_fit(btn_exit, true, true);
@@ -567,9 +603,9 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		lv_obj_align(btn_exit, usb_hid_kb_ta, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, LV_DPI / 4);
 		close_btn = btn_exit;
 
-		usb_hid_kb_kb = lv_kb_create(mbox, NULL);
-		lv_obj_set_size(usb_hid_kb_kb, LV_HOR_RES - (LV_DPI * 2), 320);
-		lv_obj_align(usb_hid_kb_kb, btn_exit, LV_ALIGN_OUT_BOTTOM_LEFT, -(LV_HOR_RES - (LV_DPI * 2) - lv_obj_get_width(btn_exit)), LV_DPI / 4);
+		usb_hid_kb_kb = lv_kb_create(panel, NULL);
+		lv_obj_set_size(usb_hid_kb_kb, LV_HOR_RES - (LV_DPI * 2), 300);
+		lv_obj_align(usb_hid_kb_kb, usb_hid_kb_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI * 4 / 3);
 		lv_kb_set_ta(usb_hid_kb_kb, usb_hid_kb_ta);
 		lv_btnm_set_action(usb_hid_kb_kb, _usb_hid_kb_action);
 		_usb_hid_kb_apply_map();
@@ -581,7 +617,8 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 	usb_hid_kb_kb = NULL;
 	usb_hid_kb_mode_label = NULL;
 
-	lv_mbox_add_btns(mbox, mbox_btn_map, nyx_mbox_action);
+	if (usbs->type != USB_HID_KEYBOARD)
+		lv_mbox_add_btns(mbox, mbox_btn_map, nyx_mbox_action);
 
 	return LV_RES_OK;
 }
