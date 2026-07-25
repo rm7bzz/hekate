@@ -39,7 +39,8 @@ typedef enum
 {
 	USB_HID_KB_MAP_LOWER,
 	USB_HID_KB_MAP_UPPER,
-	USB_HID_KB_MAP_SYMBOLS
+	USB_HID_KB_MAP_SYMBOLS,
+	USB_HID_KB_MAP_FUNCTIONS
 } usb_hid_kb_map_t;
 
 static lv_obj_t *usb_hid_kb_ta;
@@ -59,7 +60,7 @@ static void usb_gadget_set_text(void *lbl, const char *text);
 
 static const char *usb_hid_kb_map_lc[] =
 {
-	"\205123", "\204q", "\204w", "\204e", "\204r", "\204t", "\204y", "\204u", "\204i", "\204o", "\204p", "\207Bksp", "\n",
+	"\205123", "\205Fn", "\204q", "\204w", "\204e", "\204r", "\204t", "\204y", "\204u", "\204i", "\204o", "\204p", "\207Bksp", "\n",
 	"\205Esc", "\203a", "\203s", "\203d", "\203f", "\203g", "\203h", "\203j", "\203k", "\203l", "\207Enter", "\n",
 	"\206Shift", "z", "x", "c", "v", "b", "n", "m", ",", ".", "/", "\205Tab", "\n",
 	"\203Close", "\211Space", ""
@@ -67,7 +68,7 @@ static const char *usb_hid_kb_map_lc[] =
 
 static const char *usb_hid_kb_map_uc[] =
 {
-	"\205123", "\204Q", "\204W", "\204E", "\204R", "\204T", "\204Y", "\204U", "\204I", "\204O", "\204P", "\207Bksp", "\n",
+	"\205123", "\205Fn", "\204Q", "\204W", "\204E", "\204R", "\204T", "\204Y", "\204U", "\204I", "\204O", "\204P", "\207Bksp", "\n",
 	"\205Esc", "\203A", "\203S", "\203D", "\203F", "\203G", "\203H", "\203J", "\203K", "\203L", "\207Enter", "\n",
 	"\206Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "\205Tab", "\n",
 	"\203Close", "\211Space", ""
@@ -75,9 +76,17 @@ static const char *usb_hid_kb_map_uc[] =
 
 static const char *usb_hid_kb_map_sym[] =
 {
-	"\205abc", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\207Bksp", "\n",
+	"\205abc", "\205Fn", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\207Bksp", "\n",
 	"\205Esc", "!", "@", "#", "$", "%", "&", "*", "(", ")", "\207Enter", "\n",
 	"+", "-", "=", "/", "\\", "\"", "'", ",", ".", "?", "\205Tab", "\n",
+	"\203Close", "\211Space", ""
+};
+
+static const char *usb_hid_kb_map_fn[] =
+{
+	"\205abc", "F1", "F2", "F3", "F4", "\205Esc", "\n",
+	"F5", "F6", "F7", "F8", "\205Tab", "\207Bksp", "\n",
+	"F9", "F10", "F11", "F12", "\207Enter", "\n",
 	"\203Close", "\211Space", ""
 };
 
@@ -88,6 +97,8 @@ static void _usb_hid_kb_update_mode_label(void)
 
 	if (usb_hid_kb_map_mode == USB_HID_KB_MAP_SYMBOLS)
 		lv_label_set_static_text(usb_hid_kb_mode_label, "#C7EA46 Mode:# Symbols");
+	else if (usb_hid_kb_map_mode == USB_HID_KB_MAP_FUNCTIONS)
+		lv_label_set_static_text(usb_hid_kb_mode_label, "#C7EA46 Mode:# Function Keys");
 	else if (usb_hid_kb_shift_lock)
 		lv_label_set_static_text(usb_hid_kb_mode_label, "#C7EA46 Mode:# Uppercase (locked)");
 	else if (usb_hid_kb_shift_once)
@@ -103,6 +114,9 @@ static void _usb_hid_kb_apply_map(void)
 
 	switch (usb_hid_kb_map_mode)
 	{
+	case USB_HID_KB_MAP_FUNCTIONS:
+		lv_kb_set_map(usb_hid_kb_kb, usb_hid_kb_map_fn);
+		break;
 	case USB_HID_KB_MAP_SYMBOLS:
 		lv_kb_set_map(usb_hid_kb_kb, usb_hid_kb_map_sym);
 		break;
@@ -243,6 +257,35 @@ static bool _usb_hid_kb_map_char(const char *txt, u8 *modifier, u8 *usage)
 	}
 }
 
+static bool _usb_hid_kb_map_named_usage(const char *txt, u8 *modifier, u8 *usage)
+{
+	*modifier = 0;
+	*usage = 0;
+
+	if (txt[0] == 'F' && txt[1] >= '1' && txt[1] <= '9' && !txt[2])
+	{
+		*usage = 0x3A + (txt[1] - '1');
+		return true;
+	}
+	if (!strcmp(txt, "F10"))
+	{
+		*usage = 0x43;
+		return true;
+	}
+	if (!strcmp(txt, "F11"))
+	{
+		*usage = 0x44;
+		return true;
+	}
+	if (!strcmp(txt, "F12"))
+	{
+		*usage = 0x45;
+		return true;
+	}
+
+	return false;
+}
+
 static lv_res_t _usb_hid_kb_exit_action(lv_obj_t *btn)
 {
 	(void)btn;
@@ -310,6 +353,14 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 	if (!strcmp(txt, "123"))
 	{
 		usb_hid_kb_map_mode = USB_HID_KB_MAP_SYMBOLS;
+		usb_hid_kb_shift_once = false;
+		usb_hid_kb_shift_lock = false;
+		_usb_hid_kb_apply_map();
+		return LV_RES_OK;
+	}
+	if (!strcmp(txt, "Fn"))
+	{
+		usb_hid_kb_map_mode = USB_HID_KB_MAP_FUNCTIONS;
 		usb_hid_kb_shift_once = false;
 		usb_hid_kb_shift_lock = false;
 		_usb_hid_kb_apply_map();
@@ -388,6 +439,11 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 	{
 		if (_usb_hid_kb_send_usage(modifier, usage) && usb_hid_kb_ta)
 			lv_ta_add_text(usb_hid_kb_ta, txt);
+		_usb_hid_kb_finish_keypress();
+	}
+	else if (_usb_hid_kb_map_named_usage(txt, &modifier, &usage))
+	{
+		_usb_hid_kb_send_usage(modifier, usage);
 		_usb_hid_kb_finish_keypress();
 	}
 
