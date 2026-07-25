@@ -222,6 +222,9 @@ void xusb_device_get_ops(usb_ops_t *ops);
 
 int  usb_device_gadget_ums(usb_ctxt_t *usbs);
 int  usb_device_gadget_hid(usb_ctxt_t *usbs);
+int  usb_device_gadget_hid_start(usb_ctxt_t *usbs);
+int  usb_device_gadget_hid_pump(usb_ctxt_t *usbs);
+void usb_device_gadget_hid_stop(usb_ctxt_t *usbs);
 void usb_hid_keyboard_queue_clear(void);
 bool usb_hid_keyboard_queue_report(const usb_hid_keyboard_report_t *report);
 void usb_hid_keyboard_set_exit_requested(bool exit_requested);

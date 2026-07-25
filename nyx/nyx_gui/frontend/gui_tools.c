@@ -45,11 +45,15 @@ typedef enum
 static lv_obj_t *usb_hid_kb_ta;
 static lv_obj_t *usb_hid_kb_kb;
 static lv_obj_t *usb_hid_kb_mode_label;
+static lv_obj_t *usb_hid_kb_dark_bg;
+static lv_obj_t *usb_hid_kb_panel;
+static lv_task_t *usb_hid_kb_task;
 static bool usb_hid_kb_exit_requested;
 static bool usb_hid_kb_shift_once;
 static bool usb_hid_kb_shift_lock;
 static u32  usb_hid_kb_last_shift_tap;
 static usb_hid_kb_map_t usb_hid_kb_map_mode;
+static usb_ctxt_t usb_hid_kb_usbs;
 
 static const char *usb_hid_kb_map_lc[] =
 {
@@ -245,6 +249,44 @@ static lv_res_t _usb_hid_kb_exit_action(lv_obj_t *btn)
 	return LV_RES_OK;
 }
 
+static void _usb_hid_kb_cleanup(void)
+{
+	usb_device_gadget_hid_stop(&usb_hid_kb_usbs);
+
+	if (usb_hid_kb_task)
+	{
+		lv_task_del(usb_hid_kb_task);
+		usb_hid_kb_task = NULL;
+	}
+
+	close_btn = NULL;
+	usb_hid_kb_ta = NULL;
+	usb_hid_kb_kb = NULL;
+	usb_hid_kb_mode_label = NULL;
+
+	if (usb_hid_kb_panel)
+	{
+		lv_obj_del(usb_hid_kb_panel);
+		usb_hid_kb_panel = NULL;
+	}
+	if (usb_hid_kb_dark_bg)
+	{
+		lv_obj_del(usb_hid_kb_dark_bg);
+		usb_hid_kb_dark_bg = NULL;
+	}
+}
+
+static void _usb_hid_kb_poll_task(void *param)
+{
+	(void)param;
+
+	if (usb_device_gadget_hid_pump(&usb_hid_kb_usbs))
+	{
+		_usb_hid_kb_cleanup();
+		return;
+	}
+}
+
 static void _usb_hid_kb_finish_keypress(void)
 {
 	if (usb_hid_kb_shift_once && !usb_hid_kb_shift_lock)
@@ -348,12 +390,6 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 	}
 
 	return LV_RES_OK;
-}
-
-static void _usb_hid_kb_system_maintenance(bool refresh)
-{
-	(void)refresh;
-	lv_task_handler();
 }
 
 static lv_obj_t *_create_container(lv_obj_t *parent)
@@ -610,6 +646,25 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		lv_kb_set_ta(usb_hid_kb_kb, usb_hid_kb_ta);
 		lv_btnm_set_action(usb_hid_kb_kb, _usb_hid_kb_action);
 		_usb_hid_kb_apply_map();
+
+		usb_hid_kb_dark_bg = dark_bg;
+		usb_hid_kb_panel = panel;
+		usb_hid_kb_usbs.type = USB_HID_KEYBOARD;
+		usb_hid_kb_usbs.system_maintenance = &manual_system_maintenance;
+		usb_hid_kb_usbs.set_text = &usb_gadget_set_text;
+		usb_hid_kb_usbs.label = usbs->label;
+
+		manual_system_maintenance(true);
+
+		if (usb_device_gadget_hid_start(&usb_hid_kb_usbs))
+		{
+			_usb_hid_kb_cleanup();
+			return LV_RES_OK;
+		}
+
+		usb_hid_kb_task = lv_task_create(_usb_hid_kb_poll_task, 15, LV_TASK_PRIO_MID, NULL);
+		lv_task_ready(usb_hid_kb_task);
+		return LV_RES_OK;
 	}
 
 	usb_device_gadget_hid(usbs);
@@ -796,7 +851,7 @@ static lv_res_t _action_hid_keyboard(lv_obj_t *btn)
 {
 	usb_ctxt_t usbs;
 	usbs.type = USB_HID_KEYBOARD;
-	usbs.system_maintenance = &_usb_hid_kb_system_maintenance;
+	usbs.system_maintenance = &manual_system_maintenance;
 	usbs.set_text = &usb_gadget_set_text;
 
 	_create_mbox_hid(&usbs);

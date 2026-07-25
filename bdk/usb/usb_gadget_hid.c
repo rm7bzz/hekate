@@ -79,6 +79,8 @@ enum {
 
 static jc_cal_t jc_cal_ctx;
 static usb_ops_t usb_ops;
+static u32 hid_polling_time;
+static bool hid_started;
 
 static void *rpt_buffer = (u8 *)USB_EP_BULK_IN_BUF_ADDR;
 
@@ -467,11 +469,9 @@ static bool _hid_poll_keyboard(usb_ctxt_t *usbs)
 	return false;
 }
 
-int usb_device_gadget_hid(usb_ctxt_t *usbs)
+int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 {
-	int res = 0;
 	u32 gadget_type;
-	u32 polling_time;
 
 	// Get USB Controller ops.
 	if (hw_get_chip_id() == GP_HIDREV_MAJOR_T210)
@@ -484,17 +484,17 @@ int usb_device_gadget_hid(usb_ctxt_t *usbs)
 
 	if (usbs->type == USB_HID_GAMEPAD)
 	{
-		polling_time = 15000;
+		hid_polling_time = 15000;
 		gadget_type = USB_GADGET_HID_GAMEPAD;
 	}
 	else if (usbs->type == USB_HID_TOUCHPAD)
 	{
-		polling_time = 4000;
+		hid_polling_time = 4000;
 		gadget_type = USB_GADGET_HID_TOUCHPAD;
 	}
 	else
 	{
-		polling_time = 4000;
+		hid_polling_time = 4000;
 		gadget_type = USB_GADGET_HID_KEYBOARD;
 		usb_hid_keyboard_queue_clear();
 	}
@@ -513,76 +513,79 @@ int usb_device_gadget_hid(usb_ctxt_t *usbs)
 	if (usb_ops.usb_device_enumerate(gadget_type))
 		goto error;
 
-	usbs->set_text(usbs->label, "#C7EA46 Status:# Waiting for HID report request");
-
-	u32 rpt_size;
-	if (usbs->type == USB_HID_GAMEPAD)
-		rpt_size = sizeof(gamepad_report_t);
-	else if (usbs->type == USB_HID_TOUCHPAD)
-		rpt_size = sizeof(touchpad_report_t);
-	else
-		rpt_size = sizeof(usb_hid_keyboard_report_t);
-
-	if (usb_ops.usb_device_class_send_hid_report(rpt_buffer, rpt_size))
-		goto error;
-
-	usbs->set_text(usbs->label, "#C7EA46 Status:# Started HID emulation");
-
-	u32 timer_sys = get_tmr_ms() + 5000;
-	while (true)
+	if (usbs->type == USB_HID_KEYBOARD)
 	{
-		u32 timer = get_tmr_us();
+		/*
+		 * Keyboard mode is driven by the Nyx UI. Avoid blocking here waiting for
+		 * the host's first interrupt-IN poll, otherwise the GUI appears frozen
+		 * until the cable is unplugged.
+		 */
+		usbs->set_text(usbs->label, "#C7EA46 Status:# Waiting for keypress");
+	}
+	else
+	{
+		usbs->set_text(usbs->label, "#C7EA46 Status:# Waiting for HID report request");
 
-		// Check for suspended USB in case the cable was pulled.
-		if (usb_ops.usb_device_get_suspended())
-			break; // Disconnected.
-
-		// Handle control endpoint.
-		usb_ops.usbd_handle_ep0_ctrl_setup(&usbs->idle);
-
-		// Parse input device.
+		u32 rpt_size;
 		if (usbs->type == USB_HID_GAMEPAD)
-		{
-			if (_hid_poll_jc(usbs))
-				break;
-		}
-		else if (usbs->type == USB_HID_TOUCHPAD)
-		{
-			if (_hid_poll_touch(usbs))
-				break;
-		}
+			rpt_size = sizeof(gamepad_report_t);
 		else
-		{
-			if (_hid_poll_keyboard(usbs))
-				break;
-		}
+			rpt_size = sizeof(touchpad_report_t);
 
-		// Wait max gadget timing.
-		timer = get_tmr_us() - timer;
-		if (timer < polling_time)
-			usleep(polling_time - timer);
-
-		if (usbs->type == USB_HID_KEYBOARD)
-		{
-			usbs->system_maintenance(true);
-			continue;
-		}
-
-		if (timer_sys < get_tmr_ms())
-		{
-			usbs->system_maintenance(true);
-			timer_sys = get_tmr_ms() + 5000;
-		}
+		if (usb_ops.usb_device_class_send_hid_report(rpt_buffer, rpt_size))
+			goto error;
 	}
 
-	usbs->set_text(usbs->label, "#C7EA46 Status:# HID ended");
-	goto exit;
+	usbs->set_text(usbs->label, "#C7EA46 Status:# Started HID emulation");
+	hid_started = true;
+
+	return 0;
 
 error:
 	usbs->set_text(usbs->label, "#FFDD00 Error:# Timed out or canceled");
-	res = 1;
+	return 1;
+}
 
-exit:
+int usb_device_gadget_hid_pump(usb_ctxt_t *usbs)
+{
+	if (!hid_started)
+		return 1;
+
+	// Check for suspended USB in case the cable was pulled.
+	if (usb_ops.usb_device_get_suspended())
+	{
+		usbs->set_text(usbs->label, "#C7EA46 Status:# HID ended");
+		return 1;
+	}
+
+	// Handle control endpoint.
+	usb_ops.usbd_handle_ep0_ctrl_setup(&usbs->idle);
+
+	// Parse input device.
+	if (usbs->type == USB_HID_GAMEPAD)
+	{
+		if (_hid_poll_jc(usbs))
+			return 1;
+	}
+	else if (usbs->type == USB_HID_TOUCHPAD)
+	{
+		if (_hid_poll_touch(usbs))
+			return 1;
+	}
+	else
+	{
+		if (_hid_poll_keyboard(usbs))
+			return 1;
+	}
+
+	return 0;
+}
+
+void usb_device_gadget_hid_stop(usb_ctxt_t *usbs)
+{
+	if (!hid_started)
+		return;
+
 	if (usbs->type == USB_HID_KEYBOARD)
 	{
 		usb_hid_keyboard_report_t release_report = {0};
@@ -592,6 +595,34 @@ exit:
 	}
 
 	usb_ops.usbd_end(true, false);
+	hid_started = false;
+}
 
-	return res;
+int usb_device_gadget_hid(usb_ctxt_t *usbs)
+{
+	int res = usb_device_gadget_hid_start(usbs);
+	if (res)
+		return res;
+
+	u32 timer_sys = get_tmr_ms() + 5000;
+	while (true)
+	{
+		u32 timer = get_tmr_us();
+
+		if (usb_device_gadget_hid_pump(usbs))
+			break;
+
+		timer = get_tmr_us() - timer;
+		if (timer < hid_polling_time)
+			usleep(hid_polling_time - timer);
+
+		if (timer_sys < get_tmr_ms())
+		{
+			usbs->system_maintenance(true);
+			timer_sys = get_tmr_ms() + 5000;
+		}
+	}
+
+	usb_device_gadget_hid_stop(usbs);
+	return 0;
 }
