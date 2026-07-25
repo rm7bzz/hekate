@@ -87,6 +87,7 @@ static const char *usb_hid_kb_map_fn[] =
 	"\205abc", "F1", "F2", "F3", "F4", "\205Esc", "\n",
 	"F5", "F6", "F7", "F8", "\205Tab", "\207Bksp", "\n",
 	"F9", "F10", "F11", "F12", "\207Enter", "\n",
+	"\204Up", "\204Left", "\204Down", "\204Right", "\n",
 	"\203Close", "\211Space", ""
 };
 
@@ -280,6 +281,26 @@ static bool _usb_hid_kb_map_named_usage(const char *txt, u8 *modifier, u8 *usage
 	if (!strcmp(txt, "F12"))
 	{
 		*usage = 0x45;
+		return true;
+	}
+	if (!strcmp(txt, "Up"))
+	{
+		*usage = 0x52;
+		return true;
+	}
+	if (!strcmp(txt, "Down"))
+	{
+		*usage = 0x51;
+		return true;
+	}
+	if (!strcmp(txt, "Left"))
+	{
+		*usage = 0x50;
+		return true;
+	}
+	if (!strcmp(txt, "Right"))
+	{
+		*usage = 0x4F;
 		return true;
 	}
 
