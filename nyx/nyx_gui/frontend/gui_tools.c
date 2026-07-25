@@ -540,8 +540,8 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 
 		static lv_style_t kb_panel_style;
 		lv_style_copy(&kb_panel_style, &lv_style_pretty);
-		kb_panel_style.body.main_color = n_cfg.theme_bg;
-		kb_panel_style.body.grad_color = n_cfg.theme_bg;
+		kb_panel_style.body.main_color = LV_COLOR_HEX(n_cfg.theme_bg);
+		kb_panel_style.body.grad_color = LV_COLOR_HEX(n_cfg.theme_bg);
 		kb_panel_style.body.border.color = LV_COLOR_HEX(0x606060);
 		kb_panel_style.body.border.width = 2;
 		kb_panel_style.body.padding.hor = LV_DPI / 3;
