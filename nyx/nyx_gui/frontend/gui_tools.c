@@ -55,6 +55,8 @@ static u32  usb_hid_kb_last_shift_tap;
 static usb_hid_kb_map_t usb_hid_kb_map_mode;
 static usb_ctxt_t usb_hid_kb_usbs;
 
+static void usb_gadget_set_text(void *lbl, const char *text);
+
 static const char *usb_hid_kb_map_lc[] =
 {
 	"\205123", "\204q", "\204w", "\204e", "\204r", "\204t", "\204y", "\204u", "\204i", "\204o", "\204p", "\207Bksp", "\n",
