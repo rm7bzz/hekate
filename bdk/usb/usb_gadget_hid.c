@@ -82,7 +82,16 @@ static usb_ops_t usb_ops;
 static u32 hid_polling_time;
 static bool hid_started;
 
-static void *rpt_buffer = (u8 *)USB_EP_BULK_IN_BUF_ADDR;
+static u8 *rpt_buffer = (u8 *)USB_EP_BULK_IN_BUF_ADDR;
+static bool hid_tx_pending;
+static bool hid_tx_hold;
+static u8 hid_connection_state;
+static u32 hid_report_generation;
+static u32 hid_tx_generation;
+static u32 hid_next_key_time;
+static u32 hid_mouse_idle;
+static u32 hid_mouse_report_time;
+static usb_hid_mouse_report_t hid_last_mouse_report;
 
 #define USB_HID_KEYBOARD_QUEUE_LEN 64
 
@@ -164,7 +173,116 @@ bool usb_hid_keyboard_mouse_queue_keyboard(const usb_hid_keyboard_report_t *repo
 
 bool usb_hid_keyboard_mouse_queue_mouse(const usb_hid_mouse_report_t *report)
 {
+	// Leave room for a complete press/release pair even during pointer motion.
+	u32 used = (usb_hid_keyboard_mouse_ctxt.write_idx + USB_HID_KEYBOARD_QUEUE_LEN
+		- usb_hid_keyboard_mouse_ctxt.read_idx) % USB_HID_KEYBOARD_QUEUE_LEN;
+	if (used >= USB_HID_KEYBOARD_QUEUE_LEN - 4)
+		return false;
 	return _usb_hid_keyboard_mouse_queue(USB_HID_REPORT_ID_MOUSE, report, sizeof(*report));
+}
+
+bool usb_hid_keyboard_queue_tap(const usb_hid_keyboard_report_t *report, bool combined)
+{
+	u32 read_idx = combined ? usb_hid_keyboard_mouse_ctxt.read_idx : usb_hid_keyboard_ctxt.read_idx;
+	u32 write_idx = combined ? usb_hid_keyboard_mouse_ctxt.write_idx : usb_hid_keyboard_ctxt.write_idx;
+	u32 used = (write_idx + USB_HID_KEYBOARD_QUEUE_LEN - read_idx) % USB_HID_KEYBOARD_QUEUE_LEN;
+	usb_hid_keyboard_report_t release = {0};
+	if (used >= USB_HID_KEYBOARD_QUEUE_LEN - 2)
+		return false;
+	// Reserve both slots before enqueueing, so a full queue cannot leave a key held.
+	if (combined)
+	{
+		usb_hid_keyboard_mouse_queue_keyboard(report);
+		usb_hid_keyboard_mouse_queue_keyboard(&release);
+	}
+	else
+	{
+		usb_hid_keyboard_queue_report(report);
+		usb_hid_keyboard_queue_report(&release);
+	}
+	return true;
+}
+
+bool usb_hid_mouse_queue_click(u8 buttons)
+{
+	u32 used = (usb_hid_keyboard_mouse_ctxt.write_idx + USB_HID_KEYBOARD_QUEUE_LEN
+		- usb_hid_keyboard_mouse_ctxt.read_idx) % USB_HID_KEYBOARD_QUEUE_LEN;
+	usb_hid_mouse_report_t press = { .buttons = buttons };
+	usb_hid_mouse_report_t release = {0};
+	if (used >= USB_HID_KEYBOARD_QUEUE_LEN - 2)
+		return false;
+	_usb_hid_keyboard_mouse_queue(USB_HID_REPORT_ID_MOUSE, &press, sizeof(press));
+	_usb_hid_keyboard_mouse_queue(USB_HID_REPORT_ID_MOUSE, &release, sizeof(release));
+	return true;
+}
+
+void usb_hid_keyboard_reset_reports(void)
+{
+	bool exit_requested = usb_hid_keyboard_ctxt.exit_requested;
+	usb_hid_keyboard_queue_clear();
+	usb_hid_keyboard_mouse_queue_clear();
+	usb_hid_keyboard_ctxt.exit_requested = exit_requested;
+	memset(&hid_last_mouse_report, 0, sizeof(hid_last_mouse_report));
+	hid_mouse_idle = 0;
+	hid_polling_time = 0;
+	hid_report_generation++;
+	if (hid_started)
+	{
+		usb_hid_keyboard_report_t release = {0};
+		usb_hid_keyboard_queue_report(&release);
+		usb_hid_keyboard_mouse_queue_keyboard(&release);
+	}
+}
+
+int usb_hid_keyboard_get_idle(usb_gadget_type gadget, u8 report_id)
+{
+	if (report_id == 0 || (gadget == USB_GADGET_HID_KEYBOARD_MOUSE && report_id == USB_HID_REPORT_ID_KEYBOARD))
+		return hid_polling_time / 4000;
+	if (gadget == USB_GADGET_HID_KEYBOARD_MOUSE && report_id == USB_HID_REPORT_ID_MOUSE)
+		return hid_mouse_idle / 4000;
+	return -1;
+}
+
+bool usb_hid_keyboard_set_idle(usb_gadget_type gadget, u16 value)
+{
+	u8 id = value & 0xFF;
+	u32 duration = (value >> 8) * 4000;
+	if (usb_hid_keyboard_get_idle(gadget, id) < 0)
+		return false;
+	if (id == 0 || id == USB_HID_REPORT_ID_KEYBOARD)
+		hid_polling_time = duration;
+	if (gadget == USB_GADGET_HID_KEYBOARD_MOUSE && (id == 0 || id == USB_HID_REPORT_ID_MOUSE))
+		hid_mouse_idle = duration;
+	return true;
+}
+
+u32 usb_hid_keyboard_get_report(usb_gadget_type gadget, u8 protocol, u16 value, u8 *buffer)
+{
+	u8 type = value >> 8;
+	u8 id = value & 0xFF;
+	bool combined = gadget == USB_GADGET_HID_KEYBOARD_MOUSE;
+	bool prefix = combined && protocol == 1;
+	if ((!combined && id != 0) || (prefix && id != USB_HID_REPORT_ID_KEYBOARD && id != USB_HID_REPORT_ID_MOUSE)
+		|| (combined && !prefix && id > USB_HID_REPORT_ID_KEYBOARD))
+		return 0;
+	if (type == 2 && (!prefix || id == USB_HID_REPORT_ID_KEYBOARD))
+	{
+		buffer[0] = prefix ? USB_HID_REPORT_ID_KEYBOARD : 0;
+		if (prefix)
+			buffer[1] = 0; // LEDs are accepted but not displayed.
+		return prefix ? 2 : 1;
+	}
+	if (type != 1)
+		return 0;
+	if (prefix)
+		buffer[0] = id;
+	if (prefix && id == USB_HID_REPORT_ID_MOUSE)
+	{
+		memcpy(buffer + 1, &hid_last_mouse_report, sizeof(hid_last_mouse_report));
+		return sizeof(hid_last_mouse_report) + 1;
+	}
+	memcpy(buffer + prefix, &usb_hid_keyboard_ctxt.last_report, sizeof(usb_hid_keyboard_report_t));
+	return sizeof(usb_hid_keyboard_report_t) + prefix;
 }
 
 void usb_hid_keyboard_set_exit_requested(bool exit_requested)
@@ -480,7 +598,7 @@ static u8 _hid_transfer_start(usb_ctxt_t *usbs, u32 len)
 
 static bool _hid_poll_jc(usb_ctxt_t *usbs)
 {
-	int res = _jc_poll(rpt_buffer);
+	int res = _jc_poll((gamepad_report_t *)rpt_buffer);
 	if (res == INPUT_POLL_EXIT)
 		return true;
 
@@ -494,7 +612,7 @@ static bool _hid_poll_jc(usb_ctxt_t *usbs)
 
 static bool _hid_poll_touch(usb_ctxt_t *usbs)
 {
-	_fts_touch_read(rpt_buffer);
+	_fts_touch_read((touchpad_report_t *)rpt_buffer);
 
 	// Send HID report.
 	if (_hid_transfer_start(usbs, sizeof(touchpad_report_t)))
@@ -505,52 +623,80 @@ static bool _hid_poll_touch(usb_ctxt_t *usbs)
 
 static bool _hid_poll_keyboard(usb_ctxt_t *usbs)
 {
-	usb_hid_keyboard_report_t report;
-	bool has_report = _usb_hid_keyboard_dequeue_report(&report);
-
-	if (usb_hid_keyboard_ctxt.exit_requested)
-		return true;
-
-	if (has_report)
+	bool combined = usbs->type == USB_HID_KEYBOARD_MOUSE;
+	u8 protocol = usb_ops.usb_device_get_hid_protocol();
+	u32 now = get_tmr_us();
+	usb_hid_keyboard_mouse_entry_t entry = { .report_id = USB_HID_REPORT_ID_KEYBOARD, .size = 8 };
+	if (hid_tx_generation != hid_report_generation)
 	{
-		memcpy(rpt_buffer, &report, sizeof(report));
-		memcpy(&usb_hid_keyboard_ctxt.last_report, &report, sizeof(report));
-		usb_hid_keyboard_ctxt.last_report_time = get_tmr_us();
-
-		if (_hid_transfer_start(usbs, sizeof(report)))
-			return true;
+		// A protocol switch must not overwrite a packet still owned by DMA.
+		if (hid_tx_pending && usb_ops.usb_device_hid_poll() == USB_ERROR_TIMEOUT)
+			return false;
+		hid_tx_pending = false;
+		hid_tx_generation = hid_report_generation;
+		hid_next_key_time = now;
 	}
-	else if (usbs->idle && ((u32)(get_tmr_us() - usb_hid_keyboard_ctxt.last_report_time) >= usbs->idle))
+	if (hid_tx_pending)
 	{
-		memcpy(rpt_buffer, &usb_hid_keyboard_ctxt.last_report, sizeof(usb_hid_keyboard_ctxt.last_report));
-		usb_hid_keyboard_ctxt.last_report_time = get_tmr_us();
-
-		if (_hid_transfer_start(usbs, sizeof(usb_hid_keyboard_ctxt.last_report)))
+		int status = usb_ops.usb_device_hid_poll();
+		if (status == USB_ERROR_TIMEOUT)
+			return false;
+		if (status)
 			return true;
+		hid_tx_pending = false;
+		// Hold each tap across multiple firmware polling intervals.
+		hid_next_key_time = now + (hid_tx_hold ? 40000 : 0);
 	}
-
-	return false;
-}
-
-static bool _hid_poll_keyboard_mouse(usb_ctxt_t *usbs)
-{
-	usb_hid_keyboard_mouse_entry_t entry;
-
-	if (usb_hid_keyboard_get_exit_requested())
-		return true;
-
-	if (!_usb_hid_keyboard_mouse_dequeue(&entry))
+	if (!usb_ops.usb_device_hid_ready() || (s32)(now - hid_next_key_time) < 0)
 		return false;
-
-	rpt_buffer[0] = entry.report_id;
-	memcpy((u8 *)rpt_buffer + 1, entry.data, entry.size);
-
-	return _hid_transfer_start(usbs, entry.size + 1);
+	bool has_report = combined ? _usb_hid_keyboard_mouse_dequeue(&entry)
+		: _usb_hid_keyboard_dequeue_report((usb_hid_keyboard_report_t *)entry.data);
+	if (!has_report)
+	{
+		if (hid_polling_time && (u32)(now - usb_hid_keyboard_ctxt.last_report_time) >= hid_polling_time)
+			memcpy(entry.data, &usb_hid_keyboard_ctxt.last_report, 8);
+		else if (combined && protocol == 1 && hid_mouse_idle && (u32)(now - hid_mouse_report_time) >= hid_mouse_idle)
+		{
+			entry.report_id = USB_HID_REPORT_ID_MOUSE;
+			entry.size = sizeof(hid_last_mouse_report);
+			memcpy(entry.data, &hid_last_mouse_report, entry.size);
+		}
+		else
+			return false;
+	}
+	// A boot keyboard never emits report IDs or mouse packets.
+	if (entry.report_id == USB_HID_REPORT_ID_MOUSE && protocol == 0)
+		return false;
+	u32 prefix = combined && protocol == 1;
+	if (prefix)
+		rpt_buffer[0] = entry.report_id;
+	memcpy(rpt_buffer + prefix, entry.data, entry.size);
+	int status = usb_ops.usb_device_ep1_in_write(rpt_buffer, entry.size + prefix, NULL, USB_XFER_START);
+	if (status)
+		return true;
+	hid_tx_pending = true;
+	hid_tx_hold = entry.report_id == USB_HID_REPORT_ID_KEYBOARD || entry.data[0] != 0;
+	if (entry.report_id == USB_HID_REPORT_ID_KEYBOARD)
+	{
+		memcpy(&usb_hid_keyboard_ctxt.last_report, entry.data, 8);
+		usb_hid_keyboard_ctxt.last_report_time = now;
+	}
+	else
+	{
+		memcpy(&hid_last_mouse_report, entry.data, sizeof(hid_last_mouse_report));
+		// Idle retransmissions must not replay relative movement or wheel events.
+		hid_last_mouse_report.x = hid_last_mouse_report.y = hid_last_mouse_report.wheel = 0;
+		hid_mouse_report_time = now;
+	}
+	return false;
 }
 
 int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 {
 	u32 gadget_type;
+	hid_tx_pending = false;
+	hid_connection_state = 0xFF;
+	hid_next_key_time = get_tmr_us();
 
 	// Get USB Controller ops.
 	if (hw_get_chip_id() == GP_HIDREV_MAJOR_T210)
@@ -573,15 +719,15 @@ int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 	}
 	else if (usbs->type == USB_HID_KEYBOARD)
 	{
-		hid_polling_time = 4000;
+		hid_polling_time = 0;
 		gadget_type = USB_GADGET_HID_KEYBOARD;
-		usb_hid_keyboard_queue_clear();
+		usb_hid_keyboard_reset_reports();
 	}
 	else
 	{
-		hid_polling_time = 4000;
+		hid_polling_time = 0;
 		gadget_type = USB_GADGET_HID_KEYBOARD_MOUSE;
-		usb_hid_keyboard_mouse_queue_clear();
+		usb_hid_keyboard_reset_reports();
 	}
 
 	usbs->set_text(usbs->label, "#C7EA46 Status:# Started USB");
@@ -628,6 +774,7 @@ int usb_device_gadget_hid_start(usb_ctxt_t *usbs)
 
 error:
 	usbs->set_text(usbs->label, "#FFDD00 Error:# Timed out or canceled");
+	usb_ops.usbd_end(false, true);
 	return 1;
 }
 
@@ -636,8 +783,12 @@ int usb_device_gadget_hid_pump(usb_ctxt_t *usbs)
 	if (!hid_started)
 		return 1;
 
-	// Check for suspended USB in case the cable was pulled.
-	if (usb_ops.usb_device_get_suspended())
+	bool keyboard = usbs->type == USB_HID_KEYBOARD || usbs->type == USB_HID_KEYBOARD_MOUSE;
+	if (keyboard && usb_hid_keyboard_get_exit_requested())
+		return 1;
+	// Firmware can suspend the bus while rebooting. Keep the keyboard UI open
+	// and EP0 serviced so it can enumerate again; End HID always stays usable.
+	if (!keyboard && usb_ops.usb_device_get_suspended())
 	{
 		usbs->set_text(usbs->label, "#C7EA46 Status:# HID ended");
 		return 1;
@@ -645,6 +796,21 @@ int usb_device_gadget_hid_pump(usb_ctxt_t *usbs)
 
 	// Handle control endpoint.
 	usb_ops.usbd_handle_ep0_ctrl_setup(&usbs->idle);
+	if (keyboard)
+	{
+		u8 state = usb_ops.usb_device_hid_ready() ? (usb_ops.usb_device_get_hid_protocol() + 1) : 0;
+		if (state != hid_connection_state)
+		{
+			hid_connection_state = state;
+			if (!state)
+				usbs->set_text(usbs->label, "#FFDD00 Status:# USB paused/disconnected - reconnect or Close");
+			else if (state == 1)
+				usbs->set_text(usbs->label, "#C7EA46 Status:# Boot keyboard (BIOS/UEFI; mouse unavailable)");
+			else
+				usbs->set_text(usbs->label, usbs->type == USB_HID_KEYBOARD_MOUSE
+					? "#C7EA46 Status:# OS keyboard + mouse" : "#C7EA46 Status:# OS keyboard");
+		}
+	}
 
 	// Parse input device.
 	if (usbs->type == USB_HID_GAMEPAD)
@@ -664,7 +830,7 @@ int usb_device_gadget_hid_pump(usb_ctxt_t *usbs)
 	}
 	else
 	{
-		if (_hid_poll_keyboard_mouse(usbs))
+		if (_hid_poll_keyboard(usbs))
 			return 1;
 	}
 
@@ -675,24 +841,36 @@ void usb_device_gadget_hid_stop(usb_ctxt_t *usbs)
 {
 	if (!hid_started)
 		return;
+	// Bound shutdown even if the host stopped polling during reboot/disconnect.
+	u32 deadline = get_tmr_ms() + 100;
+	while (hid_tx_pending && (s32)(get_tmr_ms() - deadline) < 0)
+	{
+		usb_ops.usbd_handle_ep0_ctrl_setup(NULL);
+		if (usb_ops.usb_device_hid_poll() != USB_ERROR_TIMEOUT)
+			hid_tx_pending = false;
+	}
 
-	if (usbs->type == USB_HID_KEYBOARD)
+	if (!hid_tx_pending && usb_ops.usb_device_hid_ready() && usbs->type == USB_HID_KEYBOARD)
 	{
 		usb_hid_keyboard_report_t release_report = {0};
 		memcpy(rpt_buffer, &release_report, sizeof(release_report));
-		_hid_transfer_start(usbs, sizeof(release_report));
+		usb_ops.usb_device_ep1_in_write(rpt_buffer, sizeof(release_report), NULL, 25000);
 		usb_hid_keyboard_queue_clear();
 	}
-	else if (usbs->type == USB_HID_KEYBOARD_MOUSE)
+	else if (!hid_tx_pending && usb_ops.usb_device_hid_ready() && usbs->type == USB_HID_KEYBOARD_MOUSE)
 	{
 		usb_hid_keyboard_report_t keyboard_release = {0};
 		usb_hid_mouse_report_t mouse_release = {0};
+		u32 prefix = usb_ops.usb_device_get_hid_protocol() == 1;
 		rpt_buffer[0] = USB_HID_REPORT_ID_KEYBOARD;
-		memcpy((u8 *)rpt_buffer + 1, &keyboard_release, sizeof(keyboard_release));
-		_hid_transfer_start(usbs, sizeof(keyboard_release) + 1);
-		rpt_buffer[0] = USB_HID_REPORT_ID_MOUSE;
-		memcpy((u8 *)rpt_buffer + 1, &mouse_release, sizeof(mouse_release));
-		_hid_transfer_start(usbs, sizeof(mouse_release) + 1);
+		memcpy(rpt_buffer + prefix, &keyboard_release, sizeof(keyboard_release));
+		int status = usb_ops.usb_device_ep1_in_write(rpt_buffer, sizeof(keyboard_release) + prefix, NULL, 25000);
+		if (prefix && status == USB_RES_OK)
+		{
+			rpt_buffer[0] = USB_HID_REPORT_ID_MOUSE;
+			memcpy(rpt_buffer + 1, &mouse_release, sizeof(mouse_release));
+			usb_ops.usb_device_ep1_in_write(rpt_buffer, sizeof(mouse_release) + 1, NULL, 25000);
+		}
 		usb_hid_keyboard_mouse_queue_clear();
 	}
 

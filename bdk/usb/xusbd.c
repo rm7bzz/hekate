@@ -382,6 +382,7 @@ typedef struct _xusbd_controller_t
 	u8 max_lun;
 	bool max_lun_set;
 	u8   hid_protocol;
+	bool hid_led_out;
 	void *hid_rpt_buffer;
 	u32  hid_rpt_size;
 	u32  intr_idle_rate;
@@ -1185,7 +1186,7 @@ static int _xusb_issue_normal_trb(u8 *buf, u32 len, usb_dir_t direction)
 		ep_idx = USB_EP_BULK_OUT;
 
 	int res = _xusb_queue_trb(ep_idx, &trb, EP_RING_DOORBELL);
-	if (!res)
+	if (!res && usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD && usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD_MOUSE)
 		usbd_xotg->wait_for_event_trb = XUSB_TRB_NORMAL;
 
 	return res;
@@ -1277,7 +1278,11 @@ static int _xusb_handle_transfer_event(const transfer_event_trb_t *trb)
 		{
 		case XUSB_EP_CTRL_IN:
 			if (usbd_xotg->wait_for_event_trb == XUSB_TRB_DATA)
-				return _xusb_issue_status_trb(USB_DIR_OUT);
+			{
+				bool output = usbd_xotg->hid_led_out;
+				usbd_xotg->hid_led_out = false;
+				return _xusb_issue_status_trb(output ? USB_DIR_IN : USB_DIR_OUT);
+			}
 			else if (usbd_xotg->wait_for_event_trb == XUSB_TRB_STATUS)
 			{
 				switch (usbd_xotg->device_state)
@@ -1363,6 +1368,15 @@ static int _xusb_handle_port_change()
 		//_disable_usb_wdt4();
 	}
 
+	if ((status & (XHCI_PORTSC_PRC | XHCI_PORTSC_WRC))
+		&& (usbd_xotg->gadget == USB_GADGET_HID_KEYBOARD || usbd_xotg->gadget == USB_GADGET_HID_KEYBOARD_MOUSE))
+	{
+		usbd_xotg->config_num = 0;
+		usbd_xotg->hid_protocol = 1;
+		usbd_xotg->hid_led_out = false;
+		usbd_xotg->tx_count[USB_DIR_IN] = 0;
+		usb_hid_keyboard_reset_reports();
+	}
 	// Port Reset Change (PRC).
 	if (status & XHCI_PORTSC_PRC)
 	{
@@ -1483,6 +1497,8 @@ static int _xusb_handle_get_class_request(const usb_ctrl_setup_t *ctrl_setup)
 
 	bool valid_interface = _wIndex == usbd_xotg->interface_num;
 	bool valid_val = (_bRequest >= USB_REQUEST_BULK_GET_MAX_LUN) ? (!_wValue) : true;
+	bool keyboard = usbd_xotg->gadget == USB_GADGET_HID_KEYBOARD || usbd_xotg->gadget == USB_GADGET_HID_KEYBOARD_MOUSE;
+	u8 *report_buffer = (u8 *)USB_EP_CONTROL_BUF_ADDR;
 
 	if (!valid_interface || !valid_val)
 		goto stall;
@@ -1490,6 +1506,13 @@ static int _xusb_handle_get_class_request(const usb_ctrl_setup_t *ctrl_setup)
 	switch (_bRequest)
 	{
 	case USB_REQUEST_INTR_GET_REPORT:
+		if (keyboard)
+		{
+			u32 size = usb_hid_keyboard_get_report(usbd_xotg->gadget, usbd_xotg->hid_protocol, _wValue, report_buffer);
+			if (!size || !_wLength)
+				goto stall;
+			return _xusb_issue_data_trb(report_buffer, MIN(size, _wLength), USB_DIR_IN);
+		}
 		if (usbd_xotg->hid_rpt_size != _wLength)
 			goto stall;
 
@@ -1500,9 +1523,28 @@ static int _xusb_handle_get_class_request(const usb_ctrl_setup_t *ctrl_setup)
 		if (_wLength)
 			goto stall;
 
-		usbd_xotg->intr_idle_rate = (_wValue & 0xFF) * 4 * 1000; // Only one interface so upper byte ignored.
+		if (keyboard && !usb_hid_keyboard_set_idle(usbd_xotg->gadget, _wValue))
+			goto stall;
+		usbd_xotg->intr_idle_rate = (_wValue >> 8) * 4000;
 		usbd_xotg->intr_idle_req  = true;
 		return _xusb_issue_status_trb(USB_DIR_IN); // DELAYED_STATUS;
+
+	case USB_REQUEST_INTR_GET_IDLE:
+		if (!keyboard || _wLength != 1 || (_wValue >> 8))
+			goto stall;
+		int idle = usb_hid_keyboard_get_idle(usbd_xotg->gadget, _wValue);
+		if (idle < 0)
+			goto stall;
+		report_buffer[0] = idle;
+		return _xusb_issue_data_trb(report_buffer, 1, USB_DIR_IN);
+
+	case USB_REQUEST_INTR_SET_REPORT:
+		if (!keyboard || (_wValue >> 8) != 2
+			|| !usb_hid_keyboard_get_report(usbd_xotg->gadget, usbd_xotg->hid_protocol, _wValue, report_buffer)
+			|| !_wLength || _wLength > 2)
+			goto stall;
+		usbd_xotg->hid_led_out = true;
+		return _xusb_issue_data_trb(report_buffer, _wLength, USB_DIR_OUT);
 
 	case USB_REQUEST_INTR_GET_PROTOCOL:
 		if (_wLength != 1 || (usbd_xotg->gadget != USB_GADGET_HID_KEYBOARD
@@ -1517,6 +1559,8 @@ static int _xusb_handle_get_class_request(const usb_ctrl_setup_t *ctrl_setup)
 			goto stall;
 
 		usbd_xotg->hid_protocol = _wValue;
+		// SET_PROTOCOL is issued before interrupt polling starts.
+		usb_hid_keyboard_reset_reports();
 		return _xusb_issue_status_trb(USB_DIR_IN);
 
 	case USB_REQUEST_BULK_RESET:
@@ -1847,6 +1891,13 @@ static int _xusbd_handle_ep0_control_transfer(usb_ctrl_setup_t *ctrl_setup)
 			}
 			transmit_data = true;
 			usbd_xotg->device_state = XUSB_HID_CONFIGURED_STS_WAIT;
+		}
+		else if (_bRequest == USB_REQUEST_GET_DESCRIPTOR && (_wValue >> 8) == USB_DESCRIPTOR_HID
+			&& _wIndex == 0 && usbd_xotg->gadget >= USB_GADGET_HID_GAMEPAD)
+		{
+			desc = (u8 *)&((usb_cfg_hid_descr_t *)usbd_xotg->desc->cfg)->hid;
+			size = sizeof(usb_hid_descr_t);
+			transmit_data = true;
 		}
 		else
 			ep_stall = true;
@@ -2233,6 +2284,22 @@ bool xusb_device_get_port_in_sleep()
 	return (link_mode == XHCI_PORTSC_PLS_U3);
 }
 
+static bool xusb_device_hid_ready(void)
+{
+	return usbd_xotg->config_num && !xusb_device_get_port_in_sleep();
+}
+
+static u8 xusb_device_get_hid_protocol(void)
+{
+	return usbd_xotg->hid_protocol;
+}
+
+static int xusb_device_hid_poll(void)
+{
+	// EP0/event processing already happens once per Nyx task tick.
+	return usbd_xotg->tx_count[USB_DIR_IN] ? USB_ERROR_TIMEOUT : USB_RES_OK;
+}
+
 bool xusb_device_class_send_max_lun(u8 max_lun)
 {
 	// Timeout if get MAX_LUN request doesn't happen in 10s.
@@ -2288,6 +2355,9 @@ void xusb_device_get_ops(usb_ops_t *ops)
 	ops->usb_device_class_send_hid_report  = xusb_device_class_send_hid_report;
 	ops->usb_device_get_suspended          = xusb_device_get_port_in_sleep;
 	ops->usb_device_get_port_in_sleep      = xusb_device_get_port_in_sleep;
+	ops->usb_device_hid_ready              = xusb_device_hid_ready;
+	ops->usb_device_get_hid_protocol       = xusb_device_get_hid_protocol;
+	ops->usb_device_hid_poll               = xusb_device_hid_poll;
 
 	ops->usb_device_ep1_out_read           = xusb_device_ep1_out_read;
 	ops->usb_device_ep1_out_read_big       = xusb_device_ep1_out_read_big;

@@ -127,7 +127,9 @@ typedef enum {
 	USB_REQUEST_GET_MS_DESCRIPTOR = 0x99,
 
 	USB_REQUEST_INTR_GET_REPORT   = 1,
+	USB_REQUEST_INTR_GET_IDLE     = 2,
 	USB_REQUEST_INTR_GET_PROTOCOL = 3,
+	USB_REQUEST_INTR_SET_REPORT   = 9,
 	USB_REQUEST_INTR_SET_IDLE     = 10,
 	USB_REQUEST_INTR_SET_PROTOCOL = 11,
 
@@ -206,6 +208,9 @@ typedef struct _usb_ops_t
 	int  (*usb_device_ep1_in_writing_finish)(u32 *, u32);
 	bool (*usb_device_get_suspended)();
 	bool (*usb_device_get_port_in_sleep)();
+	bool (*usb_device_hid_ready)();
+	u8   (*usb_device_get_hid_protocol)();
+	int  (*usb_device_hid_poll)();
 } usb_ops_t;
 
 typedef struct _usb_ctxt_t
@@ -242,5 +247,11 @@ bool usb_hid_keyboard_mouse_queue_keyboard(const usb_hid_keyboard_report_t *repo
 bool usb_hid_keyboard_mouse_queue_mouse(const usb_hid_mouse_report_t *report);
 void usb_hid_keyboard_set_exit_requested(bool exit_requested);
 bool usb_hid_keyboard_get_exit_requested(void);
+bool usb_hid_keyboard_queue_tap(const usb_hid_keyboard_report_t *report, bool combined);
+bool usb_hid_mouse_queue_click(u8 buttons);
+u32  usb_hid_keyboard_get_report(usb_gadget_type gadget, u8 protocol, u16 value, u8 *buffer);
+bool usb_hid_keyboard_set_idle(usb_gadget_type gadget, u16 value);
+int  usb_hid_keyboard_get_idle(usb_gadget_type gadget, u8 report_id);
+void usb_hid_keyboard_reset_reports(void);
 
 #endif

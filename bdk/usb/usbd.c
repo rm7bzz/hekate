@@ -901,6 +901,7 @@ static void _usbd_handle_get_class_request(bool *transmit_data, u8 *desc, int *s
 
 	bool valid_interface = _wIndex == usbd_otg->interface_num;
 	bool valid_val = (_bRequest >= USB_REQUEST_BULK_GET_MAX_LUN) ? (!_wValue) : true;
+	bool keyboard = usbd_otg->gadget == USB_GADGET_HID_KEYBOARD || usbd_otg->gadget == USB_GADGET_HID_KEYBOARD_MOUSE;
 
 	if (!valid_interface || !valid_val)
 	{
@@ -911,6 +912,14 @@ static void _usbd_handle_get_class_request(bool *transmit_data, u8 *desc, int *s
 	switch (_bRequest)
 	{
 	case USB_REQUEST_INTR_GET_REPORT:
+		if (keyboard)
+		{
+			*size = usb_hid_keyboard_get_report(usbd_otg->gadget, usbd_otg->hid_protocol, _wValue, desc);
+			if (!*size || !_wLength)
+				break;
+			*transmit_data = true;
+			return;
+		}
 		if (usbd_otg->hid_rpt_size != _wLength)
 			break;
 
@@ -924,10 +933,33 @@ static void _usbd_handle_get_class_request(bool *transmit_data, u8 *desc, int *s
 		if (_wLength)
 			break;
 
-		usbd_otg->intr_idle_rate = (_wValue & 0xFF) * 4 * 1000; // Only one interface so upper byte ignored.
+		if (keyboard && !usb_hid_keyboard_set_idle(usbd_otg->gadget, _wValue))
+			break;
+		usbd_otg->intr_idle_rate = (_wValue >> 8) * 4000;
 		usbd_otg->intr_idle_req  = true;
 		_usbd_ep_ack(USB_EP_CTRL_IN);
 		return; // DELAYED_STATUS;
+
+	case USB_REQUEST_INTR_GET_IDLE:
+		if (!keyboard || _wLength != 1 || (_wValue >> 8))
+			break;
+		int idle = usb_hid_keyboard_get_idle(usbd_otg->gadget, _wValue);
+		if (idle < 0)
+			break;
+		desc[0] = idle;
+		*size = 1;
+		*transmit_data = true;
+		return;
+
+	case USB_REQUEST_INTR_SET_REPORT:
+		if (!keyboard || (_wValue >> 8) != 2
+			|| !usb_hid_keyboard_get_report(usbd_otg->gadget, usbd_otg->hid_protocol, _wValue, desc)
+			|| !_wLength || _wLength > 2)
+			break;
+		if (_usbd_ep_operation(USB_EP_CTRL_OUT, usb_ep0_ctrl_buf, _wLength, USB_XFER_SYNCED_ENUM))
+			break;
+		_usbd_ep_ack(USB_EP_CTRL_IN);
+		return;
 
 	case USB_REQUEST_INTR_GET_PROTOCOL:
 		if (_wLength != 1 || (usbd_otg->gadget != USB_GADGET_HID_KEYBOARD
@@ -945,6 +977,8 @@ static void _usbd_handle_get_class_request(bool *transmit_data, u8 *desc, int *s
 			break;
 
 		usbd_otg->hid_protocol = _wValue;
+		usbd_flush_endpoint(USB_EP_BULK_IN);
+		usb_hid_keyboard_reset_reports();
 		_usbd_ep_ack(USB_EP_CTRL_IN);
 		return;
 
@@ -1123,6 +1157,7 @@ static int _usbd_handle_set_request(bool *ep_stall)
 			// Remove configuration.
 			if (!usbd_otg->config_num)
 			{
+				usbd_otg->configuration_set = false;
 				//! TODO: Signal that to userspace.
 				_usb_reset_disable_ep1();
 				return res;
@@ -1277,6 +1312,12 @@ static int _usbd_handle_ep0_control_transfer()
 			}
 
 			usbd_otg->hid_report_sent = true;
+		}
+		else if (_bRequest == USB_REQUEST_GET_DESCRIPTOR && (_wValue >> 8) == USB_DESCRIPTOR_HID
+			&& _wIndex == 0 && usbd_otg->gadget >= USB_GADGET_HID_GAMEPAD)
+		{
+			desc = (u8 *)&((usb_cfg_hid_descr_t *)usbd_otg->desc->cfg)->hid;
+			size = sizeof(usb_hid_descr_t);
 		}
 		else
 		{
@@ -1472,6 +1513,24 @@ int usb_device_enumerate(usb_gadget_type gadget)
 
 int usbd_handle_ep0_ctrl_setup(u32 *data)
 {
+	if (usbd_otg->gadget == USB_GADGET_HID_KEYBOARD || usbd_otg->gadget == USB_GADGET_HID_KEYBOARD_MOUSE)
+	{
+		u32 status = usbd_otg->regs->usbsts;
+		usbd_otg->regs->usbsts = status;
+		if (status & USB2D_USBSTS_URI)
+		{
+			usbd_otg->regs->periodiclistbase = 0;
+			usbd_otg->regs->endptsetupstat = usbd_otg->regs->endptsetupstat;
+			usbd_otg->regs->endptcomplete = usbd_otg->regs->endptcomplete;
+			usbd_flush_endpoint(USB_EP_ALL);
+			usbd_otg->configuration_set = false;
+			usbd_otg->config_num = 0;
+			usbd_otg->hid_protocol = 1;
+			usb_hid_keyboard_reset_reports();
+		}
+		if (status & USB2D_USBSTS_PCI)
+			usbd_otg->port_speed = (usbd_otg->regs->hostpc1_devlc & USB2D_HOSTPC1_DEVLC_PSPD_MASK) >> 25;
+	}
 	// Acknowledge setup request for EP0 and copy its configuration.
 	u32 ep0_setup_req = usbd_otg->regs->endptsetupstat;
 	if (ep0_setup_req & 1)
@@ -1643,6 +1702,26 @@ bool usb_device_get_suspended()
 	return suspended;
 }
 
+static bool usb_device_hid_ready(void)
+{
+	return usbd_otg->configuration_set && !usb_device_get_suspended();
+}
+
+static u8 usb_device_get_hid_protocol(void)
+{
+	return usbd_otg->hid_protocol;
+}
+
+static int usb_device_hid_poll(void)
+{
+	usb_ep_status_t status = _usbd_get_ep1_status(USB_DIR_IN);
+	if (status == USB_EP_STATUS_IDLE)
+		return USB_RES_OK;
+	if (status == USB_EP_STATUS_ACTIVE || status == USB_EP_STATUS_STALLED)
+		return USB_ERROR_TIMEOUT;
+	return USB_ERROR_XFER_ERROR;
+}
+
 bool usb_device_get_port_in_sleep()
 {
 	// Windows heuristic: Forces port into suspend, sleep and J-State.
@@ -1698,6 +1777,9 @@ void usb_device_get_ops(usb_ops_t *ops)
 	ops->usb_device_class_send_hid_report  = usb_device_class_send_hid_report;
 	ops->usb_device_get_suspended          = usb_device_get_suspended;
 	ops->usb_device_get_port_in_sleep      = usb_device_get_port_in_sleep;
+	ops->usb_device_hid_ready              = usb_device_hid_ready;
+	ops->usb_device_get_hid_protocol       = usb_device_get_hid_protocol;
+	ops->usb_device_hid_poll               = usb_device_hid_poll;
 
 	ops->usb_device_ep1_out_read           = usb_device_ep1_out_read;
 	ops->usb_device_ep1_out_read_big       = usb_device_ep1_out_read_big;
