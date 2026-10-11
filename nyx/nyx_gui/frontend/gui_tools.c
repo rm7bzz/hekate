@@ -52,6 +52,12 @@ static lv_obj_t *usb_hid_kb_mousepad;
 static lv_task_t *usb_hid_kb_task;
 static bool usb_hid_kb_combined;
 static bool usb_hid_kb_mouse_active;
+static bool usb_hid_kb_mouse_moved;
+static lv_signal_func_t usb_hid_kb_mouse_signal;
+static lv_obj_t *usb_hid_kb_previous_close;
+static lv_obj_t *usb_hid_kb_esc_button;
+static bool usb_hid_kb_esc_repeat;
+static u32 usb_hid_kb_esc_time;
 static lv_point_t usb_hid_kb_mouse_last_point;
 static bool usb_hid_kb_exit_requested;
 static bool usb_hid_kb_shift_once;
@@ -64,36 +70,34 @@ static void usb_gadget_set_text(void *lbl, const char *text);
 
 static const char *usb_hid_kb_map_lc[] =
 {
-	"\205123", "\205Fn", "\204q", "\204w", "\204e", "\204r", "\204t", "\204y", "\204u", "\204i", "\204o", "\204p", "\207Bksp", "\n",
-	"\205Esc", "\203a", "\203s", "\203d", "\203f", "\203g", "\203h", "\203j", "\203k", "\203l", "\207Enter", "\n",
-	"\206Shift", "z", "x", "c", "v", "b", "n", "m", ",", ".", "/", "\205Tab", "\n",
-	"\203Close", "\211Space", ""
+	"q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\202Bksp", "\n",
+	"a", "s", "d", "f", "g", "h", "j", "k", "l", "\202Enter", "\n",
+	"\222Shift", "z", "x", "c", "v", "b", "n", "m", ",", ".", "/", "\n",
+	"\202Esc", "\202Tab", "\206Space", "\202Left", "\202Down", "\202Up", "\202Right", ""
 };
 
 static const char *usb_hid_kb_map_uc[] =
 {
-	"\205123", "\205Fn", "\204Q", "\204W", "\204E", "\204R", "\204T", "\204Y", "\204U", "\204I", "\204O", "\204P", "\207Bksp", "\n",
-	"\205Esc", "\203A", "\203S", "\203D", "\203F", "\203G", "\203H", "\203J", "\203K", "\203L", "\207Enter", "\n",
-	"\206Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "\205Tab", "\n",
-	"\203Close", "\211Space", ""
+	"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\202Bksp", "\n",
+	"A", "S", "D", "F", "G", "H", "J", "K", "L", "\202Enter", "\n",
+	"\222Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "\n",
+	"\202Esc", "\202Tab", "\206Space", "\202Left", "\202Down", "\202Up", "\202Right", ""
 };
 
 static const char *usb_hid_kb_map_sym[] =
 {
-	"\205abc", "\205Fn", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\207Bksp", "\n",
-	"\205Esc", "!", "@", "#", "$", "%", "&", "*", "(", ")", "\207Enter", "\n",
-	"+", "-", "=", "/", "\\", "\"", "'", ",", ".", "?", "\205Tab", "\n",
-	"\203Close", "\211Space", ""
+	"1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\\", "\"", "\202Bksp", "\n",
+	"!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "'", ":", "\202Enter", "\n",
+	"~", "`", "+", "-", "=", "_", "[", "]", "{", "}", "|", "?", ";", "\n",
+	"\202Esc", "\202Tab", "/", ",", ".", "\206Space", ""
 };
 
 static const char *usb_hid_kb_map_fn[] =
 {
-	"\205abc", "F1", "F2", "F3", "F4", "\205Esc", "\n",
-	"F5", "F6", "F7", "F8", "\205Tab", "\207Bksp", "\n",
-	"F9", "F10", "F11", "F12", "\207Enter", "\n",
-	"\204Ins", "\204Del", "\204Home", "\204End", "\n",
-	"\204PgUp", "\204PgDn", "\204Up", "\204Left", "\204Down", "\204Right", "\n",
-	"\203Close", "\211Space", ""
+	"F1", "F2", "F3", "F4", "F5", "F6", "\202Bksp", "\n",
+	"F7", "F8", "F9", "F10", "F11", "F12", "\202Enter", "\n",
+	"Ins", "Del", "Home", "End", "PgUp", "PgDn", "\n",
+	"\202Esc", "\202Tab", "\206Space", "\202Left", "\202Down", "\202Up", "\202Right", ""
 };
 
 static void _usb_hid_kb_update_mode_label(void)
@@ -140,24 +144,11 @@ static void _usb_hid_kb_apply_map(void)
 static bool _usb_hid_kb_send_usage(u8 modifier, u8 usage)
 {
 	usb_hid_keyboard_report_t report = {0};
-	usb_hid_keyboard_report_t release = {0};
 
 	report.modifier = modifier;
 	report.keycode[0] = usage;
 
-	if (usb_hid_kb_combined)
-	{
-		if (!usb_hid_keyboard_mouse_queue_keyboard(&report))
-			return false;
-		if (!usb_hid_keyboard_mouse_queue_keyboard(&release))
-			return false;
-	}
-	else if (!usb_hid_keyboard_queue_report(&report))
-		return false;
-	else if (!usb_hid_keyboard_queue_report(&release))
-		return false;
-
-	return true;
+	return usb_hid_keyboard_queue_tap(&report, usb_hid_kb_combined);
 }
 
 static bool _usb_hid_kb_map_char(const char *txt, u8 *modifier, u8 *usage)
@@ -202,6 +193,18 @@ static bool _usb_hid_kb_map_char(const char *txt, u8 *modifier, u8 *usage)
 	case '=':
 		*usage = 0x2E;
 		return true;
+	case '[':
+		*usage = 0x2F;
+		return true;
+	case ']':
+		*usage = 0x30;
+		return true;
+	case ';':
+		*usage = 0x33;
+		return true;
+	case '`':
+		*usage = 0x35;
+		return true;
 	case '\\':
 		*usage = 0x31;
 		return true;
@@ -237,6 +240,10 @@ static bool _usb_hid_kb_map_char(const char *txt, u8 *modifier, u8 *usage)
 		*modifier = 0x02;
 		*usage = 0x22;
 		return true;
+	case '^':
+		*modifier = 0x02;
+		*usage = 0x23;
+		return true;
 	case '&':
 		*modifier = 0x02;
 		*usage = 0x24;
@@ -256,6 +263,38 @@ static bool _usb_hid_kb_map_char(const char *txt, u8 *modifier, u8 *usage)
 	case '+':
 		*modifier = 0x02;
 		*usage = 0x2E;
+		return true;
+	case '_':
+		*modifier = 0x02;
+		*usage = 0x2D;
+		return true;
+	case '{':
+		*modifier = 0x02;
+		*usage = 0x2F;
+		return true;
+	case '}':
+		*modifier = 0x02;
+		*usage = 0x30;
+		return true;
+	case '|':
+		*modifier = 0x02;
+		*usage = 0x31;
+		return true;
+	case ':':
+		*modifier = 0x02;
+		*usage = 0x33;
+		return true;
+	case '~':
+		*modifier = 0x02;
+		*usage = 0x35;
+		return true;
+	case '<':
+		*modifier = 0x02;
+		*usage = 0x36;
+		return true;
+	case '>':
+		*modifier = 0x02;
+		*usage = 0x37;
 		return true;
 	case '"':
 		*modifier = 0x02;
@@ -367,13 +406,15 @@ static void _usb_hid_kb_cleanup(void)
 		usb_hid_kb_task = NULL;
 	}
 
-	close_btn = NULL;
+	close_btn = usb_hid_kb_previous_close;
 	usb_hid_kb_ta = NULL;
 	usb_hid_kb_kb = NULL;
 	usb_hid_kb_mode_label = NULL;
 	usb_hid_kb_mousepad = NULL;
 	usb_hid_kb_combined = false;
 	usb_hid_kb_mouse_active = false;
+	usb_hid_kb_esc_repeat = false;
+	usb_hid_kb_esc_button = NULL;
 
 	if (usb_hid_kb_panel)
 	{
@@ -396,50 +437,64 @@ static s8 _usb_hid_kb_mouse_delta(lv_coord_t delta)
 	return (s8)delta;
 }
 
-static void _usb_hid_kb_poll_mouse(void)
+static lv_res_t _usb_hid_kb_mouse_signal(lv_obj_t *obj, lv_signal_t signal, void *param)
 {
 	lv_point_t point;
-	lv_area_t area;
 	usb_hid_mouse_report_t report = {0};
-	bool pressed;
-	bool inside;
-
-	if (!usb_hid_kb_combined || !usb_hid_kb_mousepad || !indev_touch)
-		return;
-
-	lv_indev_get_point(indev_touch, &point);
-	lv_obj_get_coords(usb_hid_kb_mousepad, &area);
-	pressed = indev_touch->proc.state == LV_INDEV_STATE_PR;
-	inside = point.x >= area.x1 && point.x <= area.x2 && point.y >= area.y1 && point.y <= area.y2;
-
-	if (pressed && inside)
+	lv_res_t res = usb_hid_kb_mouse_signal(obj, signal, param);
+	if (res != LV_RES_OK)
+		return res;
+	if (signal == LV_SIGNAL_PRESSED)
 	{
-		report.buttons = 1;
-		if (!usb_hid_kb_mouse_active)
-		{
-			usb_hid_kb_mouse_active = true;
-			usb_hid_kb_mouse_last_point = point;
-			usb_hid_keyboard_mouse_queue_mouse(&report);
-			return;
-		}
-
+		lv_indev_get_point(param, &usb_hid_kb_mouse_last_point);
+		usb_hid_kb_mouse_active = true;
+		usb_hid_kb_mouse_moved = false;
+	}
+	else if (signal == LV_SIGNAL_PRESSING && usb_hid_kb_mouse_active)
+	{
+		lv_indev_get_point(param, &point);
 		report.x = _usb_hid_kb_mouse_delta(point.x - usb_hid_kb_mouse_last_point.x);
 		report.y = _usb_hid_kb_mouse_delta(point.y - usb_hid_kb_mouse_last_point.y);
-		usb_hid_kb_mouse_last_point = point;
 		if (report.x || report.y)
-			usb_hid_keyboard_mouse_queue_mouse(&report);
+		{
+			usb_hid_kb_mouse_moved = true;
+			if (usb_hid_keyboard_mouse_queue_mouse(&report))
+				usb_hid_kb_mouse_last_point = point;
+		}
 	}
-	else if (usb_hid_kb_mouse_active)
+	else if (signal == LV_SIGNAL_RELEASED || signal == LV_SIGNAL_PRESS_LOST)
 	{
+		if (signal == LV_SIGNAL_RELEASED && usb_hid_kb_mouse_active && !usb_hid_kb_mouse_moved)
+			usb_hid_mouse_queue_click(1);
 		usb_hid_kb_mouse_active = false;
-		usb_hid_keyboard_mouse_queue_mouse(&report);
 	}
+	return LV_RES_OK;
+}
+
+static lv_res_t _usb_hid_kb_mouse_button(lv_obj_t *btnm, const char *txt)
+{
+	(void)btnm;
+	usb_hid_mouse_queue_click(!strcmp(txt, "Right click") ? 2 : 1);
+	return LV_RES_OK;
+}
+
+static lv_res_t _usb_hid_kb_esc_action(lv_obj_t *btn)
+{
+	usb_hid_kb_esc_repeat = !usb_hid_kb_esc_repeat;
+	lv_label_set_static_text(lv_obj_get_child(btn, NULL), usb_hid_kb_esc_repeat ? "Stop ESC repeat" : "ESC repeat");
+	usb_hid_kb_esc_time = 0;
+	return LV_RES_OK;
 }
 
 static void _usb_hid_kb_poll_task(void *param)
 {
 	(void)param;
-	_usb_hid_kb_poll_mouse();
+	u32 now = get_tmr_ms();
+	if (usb_hid_kb_esc_repeat && (u32)(now - usb_hid_kb_esc_time) >= 150)
+	{
+		_usb_hid_kb_send_usage(0, 0x29);
+		usb_hid_kb_esc_time = now;
+	}
 
 	if (usb_device_gadget_hid_pump(&usb_hid_kb_usbs))
 	{
@@ -466,7 +521,7 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 
 	(void)btnm;
 
-	if (!strcmp(txt, "123"))
+	if (!strcmp(txt, "Symbols"))
 	{
 		usb_hid_kb_map_mode = USB_HID_KB_MAP_SYMBOLS;
 		usb_hid_kb_shift_once = false;
@@ -474,7 +529,7 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 		_usb_hid_kb_apply_map();
 		return LV_RES_OK;
 	}
-	if (!strcmp(txt, "Fn"))
+	if (!strcmp(txt, "F1-F12 / Nav"))
 	{
 		usb_hid_kb_map_mode = USB_HID_KB_MAP_FUNCTIONS;
 		usb_hid_kb_shift_once = false;
@@ -482,7 +537,7 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 		_usb_hid_kb_apply_map();
 		return LV_RES_OK;
 	}
-	if (!strcmp(txt, "abc"))
+	if (!strcmp(txt, "Letters"))
 	{
 		usb_hid_kb_map_mode = USB_HID_KB_MAP_LOWER;
 		usb_hid_kb_shift_once = false;
@@ -499,7 +554,7 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 			usb_hid_kb_shift_once = false;
 			usb_hid_kb_map_mode = USB_HID_KB_MAP_LOWER;
 		}
-		else if ((u32)(now - usb_hid_kb_last_shift_tap) < 600)
+		else if (usb_hid_kb_shift_once && usb_hid_kb_last_shift_tap && (u32)(now - usb_hid_kb_last_shift_tap) < 600)
 		{
 			usb_hid_kb_shift_lock = true;
 			usb_hid_kb_shift_once = false;
@@ -515,8 +570,6 @@ static lv_res_t _usb_hid_kb_action(lv_obj_t *btnm, const char *txt)
 		_usb_hid_kb_apply_map();
 		return LV_RES_OK;
 	}
-	if (!strcmp(txt, "Close"))
-		return _usb_hid_kb_exit_action(NULL);
 	if (!strcmp(txt, "Bksp"))
 	{
 		if (_usb_hid_kb_send_usage(0, 0x2A) && usb_hid_kb_ta)
@@ -749,25 +802,47 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 	lv_obj_align(mbox, NULL, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_top(mbox, true);
 
-		if (usbs->type == USB_HID_KEYBOARD || usbs->type == USB_HID_KEYBOARD_MOUSE)
+	if (usbs->type == USB_HID_KEYBOARD || usbs->type == USB_HID_KEYBOARD_MOUSE)
 	{
 		lv_obj_del(mbox);
 
 		static lv_style_t kb_panel_style;
+		static lv_style_t kb_bg_style;
+		static lv_style_t kb_key_style;
+		static lv_style_t kb_pressed_style;
+		static lv_style_t kb_preview_style;
 		lv_style_copy(&kb_panel_style, &lv_style_pretty);
 		kb_panel_style.body.main_color = LV_COLOR_HEX(n_cfg.theme_bg);
 		kb_panel_style.body.grad_color = LV_COLOR_HEX(n_cfg.theme_bg);
 		kb_panel_style.body.border.color = LV_COLOR_HEX(0x606060);
-		kb_panel_style.body.border.width = 2;
-		kb_panel_style.body.padding.hor = LV_DPI / 3;
-		kb_panel_style.body.padding.ver = LV_DPI / 3;
-		kb_panel_style.body.padding.inner = LV_DPI / 5;
+		kb_panel_style.body.border.width = 1;
+		kb_panel_style.body.radius = 12;
+		kb_panel_style.body.padding.hor = 0;
+		kb_panel_style.body.padding.ver = 0;
+		kb_panel_style.body.shadow.width = 0;
+		lv_style_copy(&kb_bg_style, &lv_style_transp);
+		kb_bg_style.body.padding.hor = 8;
+		kb_bg_style.body.padding.ver = 8;
+		kb_bg_style.body.padding.inner = 8;
+		lv_style_copy(&kb_key_style, lv_theme_get_current()->btn.rel);
+		kb_key_style.text.font = hint_small_style.text.font;
+		kb_key_style.body.opa = LV_OPA_COVER;
+		kb_key_style.body.radius = 6;
+		kb_key_style.body.shadow.width = 0;
+		lv_style_copy(&kb_pressed_style, &kb_key_style);
+		kb_pressed_style.body.main_color = LV_COLOR_HEX(0x52651F);
+		kb_pressed_style.body.grad_color = kb_pressed_style.body.main_color;
+		lv_style_copy(&kb_preview_style, &kb_panel_style);
+		kb_preview_style.text.font = hint_small_style.text.font;
+		kb_preview_style.text.color = hint_small_style.text.color;
+		kb_preview_style.body.padding.hor = 12;
+		kb_preview_style.body.padding.ver = 10;
 
 		panel = lv_cont_create(dark_bg, NULL);
 		lv_cont_set_style(panel, &kb_panel_style);
 		lv_cont_set_fit(panel, false, false);
 		lv_cont_set_layout(panel, LV_LAYOUT_OFF);
-		lv_obj_set_size(panel, LV_HOR_RES - LV_DPI / 2, LV_VER_RES - LV_DPI / 2);
+		lv_obj_set_size(panel, LV_HOR_RES - 48, LV_VER_RES - 48);
 		lv_obj_align(panel, NULL, LV_ALIGN_CENTER, 0, 0);
 		lv_obj_set_top(panel, true);
 
@@ -777,35 +852,36 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		usb_hid_kb_shift_lock = false;
 		usb_hid_kb_last_shift_tap = 0;
 		usb_hid_kb_map_mode = USB_HID_KB_MAP_LOWER;
+		usb_hid_kb_combined = usbs->type == USB_HID_KEYBOARD_MOUSE;
+		usb_hid_kb_esc_repeat = false;
+		usb_hid_kb_previous_close = close_btn;
+		// Explicit regions keep the 1280x720 keyboard, touchpad and exit disjoint.
+		lv_coord_t key_width = usb_hid_kb_combined ? 858 : LV_HOR_RES - 96;
 
 		lv_obj_t *title = lv_label_create(panel, NULL);
 		lv_label_set_recolor(title, true);
-		if (usbs->type == USB_HID_KEYBOARD_MOUSE)
-			lv_label_set_static_text(title, "#FF8000 HID Emulation#\n#C7EA46 Device:# Keyboard + Mouse");
-		else
-			lv_label_set_static_text(title, "#FF8000 HID Emulation#\n#C7EA46 Device:# Keyboard");
-		lv_obj_align(title, panel, LV_ALIGN_IN_TOP_LEFT, 0, 0);
+		lv_label_set_static_text(title, usb_hid_kb_combined ? "#FF8000 USB Keyboard + Mouse#" : "#FF8000 USB Keyboard#");
+		lv_obj_set_pos(title, 24, 18);
 
 		lbl_status = lv_label_create(panel, NULL);
 		lv_label_set_recolor(lbl_status, true);
 		lv_label_set_text(lbl_status, " ");
-		lv_obj_align(lbl_status, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 8);
+		lv_obj_set_style(lbl_status, &hint_small_style);
+		lv_label_set_long_mode(lbl_status, LV_LABEL_LONG_DOT);
+		lv_obj_set_width(lbl_status, 760);
+		lv_obj_set_pos(lbl_status, 24, 60);
 		usbs->label = (void *)lbl_status;
 
 		lbl_tip = lv_label_create(panel, NULL);
 		lv_label_set_recolor(lbl_tip, true);
-		if (usbs->type == USB_HID_KEYBOARD_MOUSE)
-			lv_label_set_static_text(lbl_tip, "Note: Drag the touchpad to move the mouse; tap for left click. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID.");
-		else
-			lv_label_set_static_text(lbl_tip, "Note: Touch to type. Press #C7EA46 B# or #C7EA46 L3# + #C7EA46 HOME# to stop HID, or remove the cable.");
+		lv_label_set_static_text(lbl_tip, "US layout  |  Shift: once; double-tap: lock  |  B / L3 + HOME: close  |  BIOS: start before reboot");
 		lv_obj_set_style(lbl_tip, &hint_small_style);
-		lv_obj_set_width(lbl_tip, LV_HOR_RES - LV_DPI);
-		lv_obj_align(lbl_tip, lbl_status, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 8);
+		lv_obj_set_pos(lbl_tip, 24, 630);
 
 		usb_hid_kb_mode_label = lv_label_create(panel, NULL);
 		lv_label_set_recolor(usb_hid_kb_mode_label, true);
 		lv_obj_set_style(usb_hid_kb_mode_label, &hint_small_style);
-		lv_obj_align(usb_hid_kb_mode_label, lbl_tip, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 6);
+		lv_obj_set_pos(usb_hid_kb_mode_label, 24, 234);
 
 		usb_hid_kb_ta = lv_ta_create(panel, NULL);
 		lv_ta_set_one_line(usb_hid_kb_ta, true);
@@ -813,18 +889,40 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 		lv_ta_set_text(usb_hid_kb_ta, "");
 		lv_ta_set_max_length(usb_hid_kb_ta, 128);
 		lv_ta_set_sb_mode(usb_hid_kb_ta, LV_SB_MODE_OFF);
-		lv_obj_set_width(usb_hid_kb_ta, LV_HOR_RES - (LV_DPI * 2));
-		lv_obj_align(usb_hid_kb_ta, usb_hid_kb_mode_label, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI / 4);
+		lv_ta_set_style(usb_hid_kb_ta, LV_TA_STYLE_BG, &kb_preview_style);
+		lv_obj_set_size(usb_hid_kb_ta, key_width, 54);
+		lv_obj_set_pos(usb_hid_kb_ta, 24, 104);
+		lv_obj_set_click(usb_hid_kb_ta, false);
+
+		static const char *pages[] = { "\221Letters", "\221Symbols", "\221F1-F12 / Nav", "" };
+		lv_obj_t *page_bar = lv_btnm_create(panel, NULL);
+		lv_btnm_set_style(page_bar, LV_BTNM_STYLE_BG, &kb_bg_style);
+		lv_btnm_set_style(page_bar, LV_BTNM_STYLE_BTN_REL, &kb_key_style);
+		lv_btnm_set_style(page_bar, LV_BTNM_STYLE_BTN_PR, &kb_pressed_style);
+		lv_obj_set_size(page_bar, key_width, 64);
+		lv_obj_set_pos(page_bar, 24, 166);
+		lv_btnm_set_map(page_bar, pages);
+		lv_btnm_set_action(page_bar, _usb_hid_kb_action);
+
+		usb_hid_kb_esc_button = lv_btn_create(panel, NULL);
+		lv_obj_t *esc_label = lv_label_create(usb_hid_kb_esc_button, NULL);
+		lv_obj_set_style(esc_label, &hint_small_style);
+		lv_label_set_static_text(esc_label, "ESC repeat");
+		lv_btn_set_fit(usb_hid_kb_esc_button, false, false);
+		lv_obj_set_size(usb_hid_kb_esc_button, 184, 64);
+		lv_obj_set_pos(usb_hid_kb_esc_button, 824, 16);
+		lv_btn_set_action(usb_hid_kb_esc_button, LV_BTN_ACTION_CLICK, _usb_hid_kb_esc_action);
 
 		lv_obj_t *btn_exit = lv_btn_create(panel, NULL);
 		lv_obj_t *lbl_exit = lv_label_create(btn_exit, NULL);
-		lv_label_set_static_text(lbl_exit, "End HID");
-		lv_btn_set_fit(btn_exit, true, true);
+		lv_obj_set_style(lbl_exit, &hint_small_style);
+		lv_label_set_static_text(lbl_exit, "Close / End HID");
+		lv_btn_set_fit(btn_exit, false, false);
+		lv_obj_set_size(btn_exit, 184, 64);
+		lv_obj_set_pos(btn_exit, 1024, 16);
 		lv_btn_set_action(btn_exit, LV_BTN_ACTION_CLICK, _usb_hid_kb_exit_action);
-		lv_obj_align(btn_exit, usb_hid_kb_ta, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, LV_DPI / 4);
 		close_btn = btn_exit;
 
-		usb_hid_kb_combined = usbs->type == USB_HID_KEYBOARD_MOUSE;
 		if (usb_hid_kb_combined)
 		{
 			static lv_style_t mousepad_style;
@@ -836,19 +934,36 @@ static lv_res_t _create_mbox_hid(usb_ctxt_t *usbs)
 			lv_cont_set_style(usb_hid_kb_mousepad, &mousepad_style);
 			lv_cont_set_fit(usb_hid_kb_mousepad, false, false);
 			lv_cont_set_layout(usb_hid_kb_mousepad, LV_LAYOUT_OFF);
-			lv_obj_set_size(usb_hid_kb_mousepad, LV_HOR_RES / 3, LV_DPI * 2);
-			lv_obj_align(usb_hid_kb_mousepad, panel, LV_ALIGN_IN_TOP_RIGHT, 0, 0);
-			lv_obj_set_click(usb_hid_kb_mousepad, false);
+			lv_obj_set_size(usb_hid_kb_mousepad, 306, 406);
+			lv_obj_set_pos(usb_hid_kb_mousepad, 902, 104);
+			lv_obj_set_click(usb_hid_kb_mousepad, true);
+			usb_hid_kb_mouse_signal = lv_obj_get_signal_func(usb_hid_kb_mousepad);
+			lv_obj_set_signal_func(usb_hid_kb_mousepad, _usb_hid_kb_mouse_signal);
 
 			lv_obj_t *mousepad_label = lv_label_create(usb_hid_kb_mousepad, NULL);
 			lv_label_set_recolor(mousepad_label, true);
-			lv_label_set_static_text(mousepad_label, "#C7EA46 Touchpad#\nDrag = move   Tap = left click");
+			lv_obj_set_style(mousepad_label, &hint_small_style);
+			lv_label_set_static_text(mousepad_label, "#C7EA46 Touchpad#\n\nSlide to move\nTap to click\n\nOS report mode only");
 			lv_obj_align(mousepad_label, usb_hid_kb_mousepad, LV_ALIGN_CENTER, 0, 0);
+			lv_obj_set_click(mousepad_label, false);
+
+			static const char *mouse_buttons[] = { "\221Left click", "\221Right click", "" };
+			lv_obj_t *click_bar = lv_btnm_create(panel, NULL);
+			lv_btnm_set_style(click_bar, LV_BTNM_STYLE_BG, &kb_bg_style);
+			lv_btnm_set_style(click_bar, LV_BTNM_STYLE_BTN_REL, &kb_key_style);
+			lv_btnm_set_style(click_bar, LV_BTNM_STYLE_BTN_PR, &kb_pressed_style);
+			lv_obj_set_size(click_bar, 306, 72);
+			lv_obj_set_pos(click_bar, 902, 522);
+			lv_btnm_set_map(click_bar, mouse_buttons);
+			lv_btnm_set_action(click_bar, _usb_hid_kb_mouse_button);
 		}
 
 		usb_hid_kb_kb = lv_kb_create(panel, NULL);
-		lv_obj_set_size(usb_hid_kb_kb, LV_HOR_RES - (LV_DPI * 2), 300);
-		lv_obj_align(usb_hid_kb_kb, usb_hid_kb_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, LV_DPI * 4 / 3);
+		lv_kb_set_style(usb_hid_kb_kb, LV_KB_STYLE_BG, &kb_bg_style);
+		lv_kb_set_style(usb_hid_kb_kb, LV_KB_STYLE_BTN_REL, &kb_key_style);
+		lv_kb_set_style(usb_hid_kb_kb, LV_KB_STYLE_BTN_PR, &kb_pressed_style);
+		lv_obj_set_size(usb_hid_kb_kb, key_width, 340);
+		lv_obj_set_pos(usb_hid_kb_kb, 24, 272);
 		lv_kb_set_ta(usb_hid_kb_kb, usb_hid_kb_ta);
 		lv_btnm_set_action(usb_hid_kb_kb, _usb_hid_kb_action);
 		_usb_hid_kb_apply_map();
