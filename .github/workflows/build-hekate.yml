@@ -15,8 +15,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up layout test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Build
         run: |
+          gcc -std=gnu11 -Ibdk -ffunction-sections -fdata-sections -Wl,--gc-sections tests/test_usb_input.c -o /tmp/test-usb-input
+          /tmp/test-usb-input
+          node tests/test_usb_layout.cjs --keys
           make clean
           make
 
@@ -28,10 +36,7 @@ jobs:
       - name: Bundle artifacts
         run: |
           mkdir -p artifacts
-          cp -f output/hekate.bin artifacts/ || true
-          cp -f output/hekate_unc.bin artifacts/ || true
-          cp -f output/nyx.bin artifacts/ || true
-          cp -f bootloader/update.bin artifacts/ || true
+          cp output/hekate.bin output/hekate_unc.bin output/nyx.bin artifacts/
           tar -czf "hekate-${SAFE_REF}-${GITHUB_SHA}.tar.gz" -C artifacts .
 
       - name: Upload artifacts

@@ -31,10 +31,30 @@ Custom Graphical Nintendo Switch bootloader, firmware patcher, tools, and many m
 - **Switch Android & Linux flasher**
 - **USB Mass Storage (UMS) for SD/eMMC/emuMMC** -- Converts Switch into a SD Card Reader
 - **USB Gamepad** -- Converts Switch with Joycon into a USB HID Gamepad
-- **USB Keyboard** -- Converts Switch into a USB HID Keyboard with Nyx on-screen typing
+- **USB Keyboard + Mouse** -- Touch keyboard, F1-F12/navigation keys and an optional PC touchpad; supports boot-keyboard protocol
 - **Hardware and Peripherals info** (SoC, Fuses, RAM, Display, Touch, eMMC, SD, Battery, PSU, Charger)
 - **Many other tools** like Archive Bit Fixer, Touch Calibration, SD/eMMC Benchmark, AutoRCM enabler and more
 
+
+## USB Keyboard and BIOS/UEFI
+
+In Nyx, open **Tools > USB Tools > USB Keyboard** or **USB Keyboard + Mouse**.
+The keyboard has separate Letters, Symbols and F1-F12 / Nav pages. Space is a
+dedicated wide key; Close / End HID is outside the keyboard. The mouse panel
+supports slide-to-move, tap-to-click, and explicit left/right click buttons.
+Typing uses the US keyboard layout. Shift is one-shot; double-tap it to lock.
+
+For BIOS entry, connect and start HID **before restarting the PC**, then use
+**ESC repeat** during startup. Tap it again to stop. Firmware must enable USB
+keyboard/legacy USB support, and the setup key may be F2, Del or another key
+instead of Esc. Fast Boot can skip external USB input. Boot protocol sends
+standard 8-byte keyboard reports; the mouse is available only in OS report mode.
+USB suspend during a restart leaves the UI open so the host can reconnect.
+Use **Close / End HID**, Joy-Con **B**, or **L3 + HOME** to exit, including after
+unplugging. A disconnected host cannot receive a final key-release report.
+
+Both controller paths compile in CI. Firmware enumeration, BIOS-entry timing,
+touch input and mouse behavior still require testing on actual Switch/PC hardware.
 
 ## Bootloader folders and files
 
